@@ -1,0 +1,9 @@
+﻿{
+    "default":  {
+                    "PricePenaltyFactor":  1,
+                    "Wallet":  "134bw4oTorEJUUVFhokDQDfNqTs7rBMNYy",
+                    "UserName":  "mrplus",
+                    "WorkerName":  "ID=NPlusMinerRocks",
+                    "APIKey":  ""
+                }
+}
