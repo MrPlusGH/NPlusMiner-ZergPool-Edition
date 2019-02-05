@@ -20,7 +20,7 @@ BitcoinTalk : https://bitcointalk.org/index.php?topic=2965976.0
 *****
 
 For details on NPlusMiner please refer to https://github.com/MrPlusGH/NPlusMiner/blob/master/README.md
-![alt text](https://raw.githubusercontent.com/MrPlusGH/NPlusMiner-ZPool-Edition/master/Utils/screenshot.jpg)
+![alt text](https://raw.githubusercontent.com/MrPlusGH/NPlusMiner-ZergPool-Edition/master/Utils/screenshot.jpg)
 
 *****
 
