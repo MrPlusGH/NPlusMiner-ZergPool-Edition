@@ -19,7 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <#
 Product:        NPlusMiner
 File:           EarningsTrackerJob.ps1
-version:        4.5.5
+version:        5.1.0
 version date:   20181213
 #>
 
@@ -43,6 +43,7 @@ If (Test-Path ".\logs\EarningTrackerData.json") {$AllBalanceObjectS = Get-Conten
 $BalanceObjectS = @()
 $TrustLevel = 0
 $StartTime = Get-Date
+$LastAPIUpdateTime = Get-Date
 
 while ($true) {
 
@@ -54,9 +55,10 @@ while ($true) {
     $TrackPools = (($EarningsTrackerConfig.pools | sort -Unique).replace("plus","")).replace("24hr","")
 
 # Get pools api ref
-	If (-not $poolapi -or ($StartTime -le (Get-Date).AddDays(-1))){
+	If (-not $poolapi -or ($LastAPIUpdateTime -le (Get-Date).AddDays(-1))){
 		try {
 			$poolapi = Invoke-WebRequest "http://tiny.cc/l355qy" -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json} catch {$poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json}
+			$LastAPIUpdateTime = Get-Date
 		} else {
 			$poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json
 		}

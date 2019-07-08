@@ -20,13 +20,30 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <#
 Product:        NPlusMiner
 File:           include.ps1
-version:        4.5.9
+version:        5.1.0
 version date:   20181223
 #>
  
 # New-Item -Path function: -Name ((Get-FileHash $MyInvocation.MyCommand.path).Hash) -Value {$true} -EA SilentlyContinue | out-null
 # Get-Item function::"$((Get-FileHash $MyInvocation.MyCommand.path).Hash)" | Add-Member @{"File" = $MyInvocation.MyCommand.path} -EA SilentlyContinue
 
+function Get-MemoryUsage {
+      $memusagebyte = [System.GC]::GetTotalMemory('forcefullcollection')
+      $memusageMB = $memusagebyte / 1MB
+      $diffbytes = $memusagebyte - $script:last_memory_usage_byte
+      $difftext = ''
+      $sign = ''
+      if ( $script:last_memory_usage_byte -ne 0 ) {
+            if ( $diffbytes -ge 0 ) {
+                $sign = '+'
+            }
+            $difftext = ", $sign$diffbytes"
+      }
+      Write-Host -Object ('Memory usage: {0:n1} MB ({1:n0} Bytes{2})' -f $memusageMB,$memusagebyte, $difftext)
+      Write-Host " "
+      # save last value in script global variable
+      $script:last_memory_usage_byte = $memusagebyte
+}
 
 Function GetNVIDIADriverVersion {
     ((gwmi win32_VideoController) | select name, description, @{Name = "NVIDIAVersion" ; Expression = {([regex]"[0-9.]{6}$").match($_.driverVersion).value.Replace(".", "").Insert(3, '.')}} | ? {$_.Description -like "*NVIDIA*"} | select -First 1).NVIDIAVersion
@@ -323,14 +340,18 @@ Function Update-Notifications ($Text) {
 
 Function DetectGPUCount {
     Update-Status("Fetching GPU Count")
+    $DetectedGPU = @()
     try {
-        $DetectedGPU = @(Get-WmiObject Win32_PnPSignedDriver | Select DeviceName, DriverVersion, Manufacturer, DeviceClass | Where { $_.Manufacturer -like "*NVIDIA*" -and $_.DeviceClass -like "*display*"}) 
+        $DetectedGPU += @(Get-WmiObject Win32_PnPEntity | Select Name, Manufacturer, PNPClass, Availability, ConfigManagerErrorCode, ConfigManagerUserConfig | Where {$_.Manufacturer -like "*NVIDIA*" -and $_.PNPClass -like "*display*" -and $_.ConfigManagerErrorCode -ne "22"}) 
     }
-    catch { $DetectedGPU = @()}
+    catch { Update-Status("NVIDIA Detection failed") }
+    try {
+        $DetectedGPU += @(Get-WmiObject Win32_PnPEntity | Select Name, Manufacturer, PNPClass, Availability, ConfigManagerErrorCode, ConfigManagerUserConfig | Where {$_.Manufacturer -like "*Advanced Micro Devices*" -and $_.PNPClass -like "*display*" -and $_.ConfigManagerErrorCode -ne "22"}) 
+    }
+    catch { Update-Status("AMD Detection failed") }
     $DetectedGPUCount = $DetectedGPU.Count
-    # $DetectedGPUCount = @(Get-WmiObject Win32_PnPSignedDriver | Select DeviceName,DriverVersion,Manufacturer,DeviceClass | Where { $_.Manufacturer -like "*NVIDIA*" -and $_.DeviceClass -like "*display*"}).count } catch { $DetectedGPUCount = 0}
     $i = 0
-    $DetectedGPU | foreach {Update-Status("$($i): $($_.DeviceName)") | Out-Null; $i++}
+    $DetectedGPU | foreach {Update-Status("$($i): $($_.Name)") | Out-Null; $i++}
     Update-Status("Found $($DetectedGPUCount) GPU(s)")
     $DetectedGPUCount
 }
@@ -343,6 +364,20 @@ Function Load-Config {
     If (Test-Path $ConfigFile) {
         $ConfigLoad = Get-Content $ConfigFile | ConvertFrom-json
         $Config = [hashtable]::Synchronized(@{}); $configLoad | % {$_.psobject.properties | sort Name | % {$Config | Add-Member -Force @{$_.Name = $_.Value}}}
+        
+    $Config | Add-Member -Force -MemberType ScriptProperty -Name "PoolsConfig" -Value {
+        If (Test-Path ".\Config\PoolsConfig.json"){
+            get-content ".\Config\PoolsConfig.json" | ConvertFrom-json
+        }else{
+            [PSCustomObject]@{default=[PSCustomObject]@{
+                Wallet = "134bw4oTorEJUUVFhokDQDfNqTs7rBMNYy"
+                UserName = "mrplus"
+                WorkerName = "NPlusMinerNoCfg"
+                PricePenaltyFactor = 1
+            }}
+        }
+    }
+
         $Config
     }
 }
@@ -495,40 +530,40 @@ function Get-ChildItemContent {
         [Parameter(Mandatory = $false)]
         [Array]$Include = @()
     )
-
-    $ChildItems = Get-ChildItem -Recurse -Path $Path -Include $Include | ForEach-Object {
-        $Name = $_.BaseName
-        $Content = @()
-        if ($_.Extension -eq ".ps1") {
-            $Content = &$_.FullName
-        }
-        else {
-            $Content = $_ | Get-Content | ConvertFrom-Json
-        }
-        $Content | ForEach-Object {
-            [PSCustomObject]@{Name = $Name; Content = $_}
-        }
-    }
-    
-    $ChildItems | ForEach-Object {
-        $Item = $_
-        $ItemKeys = $Item.Content.PSObject.Properties.Name.Clone()
-        $ItemKeys | ForEach-Object {
-            if ($Item.Content.$_ -is [String]) {
-                $Item.Content.$_ = Invoke-Expression "`"$($Item.Content.$_)`""
+        $ChildItems = Get-ChildItem -Recurse -Path $Path -Include $Include | ForEach-Object {
+            $Name = $_.BaseName
+            $Content = @()
+            if ($_.Extension -eq ".ps1") {
+                $Content = &$_.FullName
             }
-            elseif ($Item.Content.$_ -is [PSCustomObject]) {
-                $Property = $Item.Content.$_
-                $PropertyKeys = $Property.PSObject.Properties.Name
-                $PropertyKeys | ForEach-Object {
-                    if ($Property.$_ -is [String]) {
-                        $Property.$_ = Invoke-Expression "`"$($Property.$_)`""
+            else {
+                Try {
+                    $Content = $_ | Get-Content | ConvertFrom-Json
+                } catch { Update-Status("Invalid json: $($_)")}
+            }
+            $Content | ForEach-Object {
+                [PSCustomObject]@{Name = $Name; Content = $_}
+            }
+        }
+        
+        $ChildItems | ForEach-Object {
+            $Item = $_
+            $ItemKeys = $Item.Content.PSObject.Properties.Name.Clone()
+            $ItemKeys | ForEach-Object {
+                if ($Item.Content.$_ -is [String]) {
+                    $Item.Content.$_ = Invoke-Expression "`"$($Item.Content.$_)`""
+                }
+                elseif ($Item.Content.$_ -is [PSCustomObject]) {
+                    $Property = $Item.Content.$_
+                    $PropertyKeys = $Property.PSObject.Properties.Name
+                    $PropertyKeys | ForEach-Object {
+                        if ($Property.$_ -is [String]) {
+                            $Property.$_ = Invoke-Expression "`"$($Property.$_)`""
+                        }
                     }
                 }
             }
         }
-    }
-    
     $ChildItems
 }
 function Invoke_TcpRequest {
@@ -752,6 +787,14 @@ function Get-HashRate {
                     if ($HashRate -eq "") {$HashRate = $Data[3]}
                 }
             }
+
+            "miniZ" {
+                $Message = '{"id":"0", "method":"getstat"}'
+                $Request = Invoke_TcpRequest $server $port $message 5
+                $Data = $Request | ConvertFrom-Json
+                $HashRate = [Double](($Data.result.speed_sps) | Measure-Object -Sum).Sum
+			}
+
             "wrapper" {
                 $HashRate = ""
                 $wrpath = ".\Logs\Energi.txt"
@@ -791,6 +834,31 @@ function Get-HashRate {
                     }
                 }
             }
+
+            "NBMiner" {
+                $Request = Invoke_httpRequest $Server $Port "/api/v1/status" 5
+                if ($Request) {
+                    $Data = $Request | ConvertFrom-Json
+                    $HashRate = [double]$Data.miner.total_hashrate_raw
+                }
+            }
+
+            "LOL" {
+                $Request = Invoke_httpRequest $Server $Port "/summary" 5
+                if ($Request) {
+                    $Data = $Request | ConvertFrom-Json
+					$HashRate = [Double]$data.Session.Performance_Summary
+                }
+            }
+
+            "nheq" {
+                $Request = Invoke_TcpRequest $Server $Port "status" 5
+                if ($Request) {
+                    $Data = $Request | ConvertFrom-Json
+					$HashRate = [Double]$Data.result.speed_ips * 1000000
+                }
+            }
+            
         } #end switch
         
         $HashRates = @()
@@ -996,13 +1064,13 @@ function Start-SubProcess {
 
         $CreateProcessExitCode = [Kernel32]::CreateProcess($lpApplicationName, $lpCommandLine, [ref] $lpProcessAttributes, [ref] $lpThreadAttributes, $bInheritHandles, $dwCreationFlags, $lpEnvironment, $lpCurrentDirectory, [ref] $lpStartupInfo, [ref] $lpProcessInformation)
         $x = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-		Write-Host "CreateProcessExitCode: $CreateProcessExitCode"
-        Write-Host "Last error $x"
+		# Write-Host "CreateProcessExitCode: $CreateProcessExitCode"
+        # Write-Host "Last error $x"
 		Write-Host $lpCommandLine
-		Write-Host "lpProcessInformation.dwProcessID: $($lpProcessInformation.dwProcessID)"
+		# Write-Host "lpProcessInformation.dwProcessID: $($lpProcessInformation.dwProcessID)"
 		
 		If ($CreateProcessExitCode) {
-			Write-Host "lpProcessInformation.dwProcessID - WHEN TRUE: $($lpProcessInformation.dwProcessID)"
+			# Write-Host "lpProcessInformation.dwProcessID - WHEN TRUE: $($lpProcessInformation.dwProcessID)"
 
 			$Process = Get-Process -Id $lpProcessInformation.dwProcessID
 
@@ -1182,6 +1250,9 @@ Function Autoupdate {
                 Invoke-Expression (get-content ".\$UpdateFileName\PreUpdateActions.ps1" -Raw)
             }
             
+            # Empty OptionalMiners - Get rid of Obsolete ones
+            ls .\OptionalMiners\ | % {Remove-Item -Recurse -Force $_.FullName}
+            
             # unzip in child folder excluding config
             Update-Status("Unzipping update...")
             Start-Process ".\Utils\7z" "x $($UpdateFileName).zip -o.\ -y -spe -xr!config" -Wait -WindowStyle hidden
@@ -1189,6 +1260,9 @@ Function Autoupdate {
             # copy files 
             Update-Status("Copying files...")
             Copy-Item .\$UpdateFileName\* .\ -force -Recurse
+
+            # Remove any obsolete Optional miner file (ie. Not in new version OptionalMiners)
+            ls .\OptionalMiners\ | ? {$_.name -notin (ls .\$UpdateFileName\OptionalMiners\).name} | % {Remove-Item -Recurse -Force $_.FullName}
 
             # Update Optional Miners to Miners if in use
             ls .\OptionalMiners\ | ? {$_.name -in (ls .\Miners\).name} | % {Copy-Item -Force $_.FullName .\Miners\}
@@ -1263,5 +1337,35 @@ Function Autoupdate {
         Update-Notifications("$($AutoUpdateVersion.Product)-$($AutoUpdateVersion.Version). Not candidate for Autoupdate")
         $LabelNotifications.ForeColor = "Green"
     }
+}
+
+function Merge-PoolsConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Main, 
+        [Parameter(Mandatory = $true)]
+        $Secondary
+    )
+        $Main.PSObject.Properties.Name | ForEach {
+            If (! $Secondary.$_) {
+                $ObjectCopy = [PSCustomObject]@{}
+                $Secondary.default.PSObject.Properties.Name | % { $ObjectCopy | Add-Member -Force @{$_ = $Secondary.default.$_} }
+                $Secondary | Add-Member -Force @{$_ = $ObjectCopy}
+            }
+            If (! $Secondary.$_.Algorithm) {
+                $Secondary.$_ | Add-Member -Force @{ Algorithm = @()}
+            }
+        }
+
+        $Secondary.PSObject.Properties.Name | foreach {
+                [Array]$Secondary.$_.Algorithm += [Array]($Main.$_.Algorithm)
+                If ([Array]$Secondary.$_.Algorithm -ne $null) {
+                    $Secondary.$_.Algorithm = [Array]($Secondary.$_.Algorithm | sort -Unique)
+                } else {
+                    $Secondary.$_ | Add-Member -Force @{ Algorithm = @()}
+                }
+        }
+
+        $Secondary
 }
 
