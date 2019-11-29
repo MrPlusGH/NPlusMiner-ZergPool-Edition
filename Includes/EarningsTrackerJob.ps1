@@ -1,6 +1,6 @@
 <#
 This file is part of NPlusMiner
-Copyright (c) 2018 MrPlus
+Copyright (c) 2018-2019 MrPlus
 
 NPlusMiner is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <#
 Product:        NPlusMiner
 File:           EarningsTrackerJob.ps1
-version:        5.1.0
-version date:   20181213
+version:        5.4.1
+version date:   20190809
 #>
 
 # To start the job one could use the following
@@ -87,11 +87,17 @@ while ($true) {
                 $CurDate = Get-Date
 				# Write-host $Pool
 				# Write-Host "$($APIUri)$($Wallet)"
-                If ($Pool -eq "nicehash"){
+                If ($Pool -eq "nicehash-V1"){
                     try {
                     $TempBalanceData = Invoke-WebRequest ("$($APIUri)$($Wallet)") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json } catch {  }
                     if (-not $TempBalanceData.$BalanceJson) {$TempBalanceData | Add-Member -NotePropertyName $BalanceJson -NotePropertyValue ($TempBalanceData.result.Stats | measure -sum $BalanceJson).sum -Force}
                     if (-not $TempBalanceData.$TotalJson) {$TempBalanceData | Add-Member -NotePropertyName $TotalJson -NotePropertyValue ($TempBalanceData.result.Stats | measure -sum $BalanceJson).sum -Force}
+                } elseif ($Pool -eq "nicehash") {
+                    try {
+                    $TempBalanceData = Invoke-WebRequest ("$($APIUri)$($Wallet)/rigs") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json } catch {  }
+                    [Double]$NHTotalBalance = [Double]($TempBalanceData.unpaidAmount) + [Double]($TempBalanceData.externalBalance)
+                    $TempBalanceData | Add-Member -NotePropertyName $BalanceJson -NotePropertyValue $NHTotalBalance -Force
+                    $TempBalanceData | Add-Member -NotePropertyName $TotalJson -NotePropertyValue $NHTotalBalance -Force
                 } elseif ($Pool -eq "miningpoolhub") {
                     try {
                     $TempBalanceData = ((((Invoke-WebRequest ("$($APIUri)$($Wallet)") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"}).content | ConvertFrom-Json).getuserallbalances).data | Where {$_.coin -eq "bitcoin"}) } catch {  }#.confirmed

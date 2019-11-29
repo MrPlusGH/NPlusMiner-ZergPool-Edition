@@ -1,7 +1,7 @@
 <#
 This file is part of NPlusMiner
 Copyright (c) 2018 Nemo
-Copyright (c) 2018 MrPlus
+Copyright (c) 2018-2019 MrPlus
 
 NPlusMiner is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -20,29 +20,43 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <#
 Product:        NPlusMiner
 File:           include.ps1
-version:        5.1.0
-version date:   20181223
+version:        5.9.9
+version date:   20191117
 #>
  
 # New-Item -Path function: -Name ((Get-FileHash $MyInvocation.MyCommand.path).Hash) -Value {$true} -EA SilentlyContinue | out-null
 # Get-Item function::"$((Get-FileHash $MyInvocation.MyCommand.path).Hash)" | Add-Member @{"File" = $MyInvocation.MyCommand.path} -EA SilentlyContinue
 
 function Get-MemoryUsage {
-      $memusagebyte = [System.GC]::GetTotalMemory('forcefullcollection')
-      $memusageMB = $memusagebyte / 1MB
-      $diffbytes = $memusagebyte - $script:last_memory_usage_byte
-      $difftext = ''
-      $sign = ''
-      if ( $script:last_memory_usage_byte -ne 0 ) {
-            if ( $diffbytes -ge 0 ) {
-                $sign = '+'
-            }
-            $difftext = ", $sign$diffbytes"
+      # $memusagebyte = [System.GC]::GetTotalMemory('forcefullcollection')
+      # $memusageMB = $memusagebyte / 1MB
+      # $diffbytes = $memusagebyte - $script:last_memory_usage_byte
+      # $difftext = ''
+      # $sign = ''
+      # if ( $script:last_memory_usage_byte -ne 0 ) {
+            # if ( $diffbytes -ge 0 ) {
+                # $sign = '+'
+            # }
+            # $difftext = ", $sign$diffbytes"
+      # }
+# [System.GC]::Collect()
+      # Write-Host -Object ('Memory usage: {0:n1} MB ({1:n0} Bytes{2})' -f $memusageMB,$memusagebyte, $difftext)
+      # Write-Host " "
+      $P = get-process -PID $PID
+      If (!$Variables.PerfCounterProcPath) {
+        $proc_path=((Get-Counter "\Process(*)\ID Process").CounterSamples | ? {$_.RawValue -eq $pid}).Path  
+        $proc_path = $proc_path -replace "id process","Working Set - Private"
+        $Variables | Add-Member -Force @{PerfCounterProcPath = $proc_path}
       }
-      Write-Host -Object ('Memory usage: {0:n1} MB ({1:n0} Bytes{2})' -f $memusageMB,$memusagebyte, $difftext)
-      Write-Host " "
+      
+      # Write-Host -Object ('PagedMemorySize  : {0:n1} MB ' -f ($P.PagedMemorySize/1024))
+      # Write-Host -Object ('PrivateMemorySize: {0:n1} MB ' -f ($P.PrivateMemorySize/1024))
+      # Write-Host -Object ('VirtualMemorySize: {0:n1} MB ' -f ($P.VirtualMemorySize/1024))
+      # Write-Host -Object ('WorkingSetSize: {0:n1} MB ' -f ($P.WorkingSet/1024))
+      Write-Host -Object ('PrivatePageCount: {0:n1} MB ' -f (((Get-Counter $Variables.PerfCounterProcPath).CounterSamples[0]).RawValue/1mb))
+
       # save last value in script global variable
-      $script:last_memory_usage_byte = $memusagebyte
+      # $script:last_memory_usage_byte = $
 }
 
 Function GetNVIDIADriverVersion {
@@ -532,6 +546,7 @@ function Get-ChildItemContent {
     )
         $ChildItems = Get-ChildItem -Recurse -Path $Path -Include $Include | ForEach-Object {
             $Name = $_.BaseName
+            $FileName = $_.Name
             $Content = @()
             if ($_.Extension -eq ".ps1") {
                 $Content = &$_.FullName
@@ -539,7 +554,7 @@ function Get-ChildItemContent {
             else {
                 Try {
                     $Content = $_ | Get-Content | ConvertFrom-Json
-                } catch { Update-Status("Invalid json: $($_)")}
+                } catch { Update-Status("Invalid json: $($Path)\$($FileName)")}
             }
             $Content | ForEach-Object {
                 [PSCustomObject]@{Name = $Name; Content = $_}
@@ -1244,18 +1259,18 @@ Function Autoupdate {
             Start-Process ".\Utils\7z" "a $($BackupFileName) .\* -x!*.zip" -Wait -WindowStyle hidden
             If (!(test-path .\$BackupFileName)) {Update-Status("Backup failed"); return}
             
-            # Pre update specific actions if any
-            # Use PreUpdateActions.ps1 in new release to place code
-            If (Test-Path ".\$UpdateFileName\PreUpdateActions.ps1") {
-                Invoke-Expression (get-content ".\$UpdateFileName\PreUpdateActions.ps1" -Raw)
-            }
-            
             # Empty OptionalMiners - Get rid of Obsolete ones
             ls .\OptionalMiners\ | % {Remove-Item -Recurse -Force $_.FullName}
             
             # unzip in child folder excluding config
             Update-Status("Unzipping update...")
             Start-Process ".\Utils\7z" "x $($UpdateFileName).zip -o.\ -y -spe -xr!config" -Wait -WindowStyle hidden
+            
+            # Pre update specific actions if any
+            # Use PreUpdateActions.ps1 in new release to place code
+            If (Test-Path ".\$UpdateFileName\PreUpdateActions.ps1") {
+                Invoke-Expression (get-content ".\$UpdateFileName\PreUpdateActions.ps1" -Raw)
+            }
             
             # copy files 
             Update-Status("Copying files...")
@@ -1368,4 +1383,89 @@ function Merge-PoolsConfig {
 
         $Secondary
 }
+
+Function Merge-Command {
+    param(
+        [Parameter(Mandatory = $false)]
+        [String]$Slave,
+        [Parameter(Mandatory = $false)]
+        [String]$Master,
+        [Parameter(Mandatory = $false)]
+        [String]$Type
+    )
+
+    $NoReplacePassArgs = @(
+        ",ID"
+    )
+
+    $NoReplaceCmdArgs = @(
+        "-u",
+        "--user",
+        "-ewal"
+    )
+
+    # Some RegEx guru would surely do a better job here...
+
+    if ($Master -ne "") {
+        Switch ($type) {
+            "Password" {
+                If ($Slave -and !($Slave.StartsWith(","))) {$Slave = ",$($Slave)"}
+                ($Master.split(",") | ? {$_ -ne ""} | foreach {",$($_)"}) | foreach {
+                    $MasterPassArg = $_
+                    ($_.split("=") | ? {$_.startsWith(",")} | foreach {"$($_)="}) | Foreach {
+                        If ($_ -notin $NoReplacePassArgs) {
+                            If ($Slave -match "$_ *([^,]+)" | Out-Null) {
+                                $Slave = $Slave -replace "$_ *([^,]+)",$MasterPassArg
+                            } else {
+                                $Slave = $Slave + $MasterPassArg
+                            }
+                        }
+                    }
+                }
+                $Slave.Substring(1)
+            }
+            "Command" {
+                If ($Master -and !$Master.StartsWith(" ")) {$Master = " $($Master)"}
+                If ($Slave -and !$Slave.StartsWith(" ")) {$Slave = " $($Slave)"}
+                If ($Master -and !$Master.EndsWith(" ")) {$Master = "$($Master) "}
+                If ($Slave -and !$Slave.EndsWith(" ")) {$Slave = "$($Slave) "}
+                ($Master.split(" ") | ? {$_.StartsWith("-")}) | Foreach {
+                    If ($_ -notin $NoReplaceCmdArgs) {
+                        if ($Master -match " $_ -") {
+                            If (!($Slave -match " $_ -")) {
+                                $Slave = $Slave + " $($_)"
+                            }
+                        } elseif ($Master -match " $_ *([^-]+)") {
+                            $MasterCmdArg = $Matches[0]
+                            If ($Slave -match " $_ *([^-]+)") {
+                                $Slave = $Slave -replace " $_ *([^-]+)",$MasterCmdArg
+                            } else {
+                                $Slave = $Slave + " $($MasterCmdArg)"    
+                            }
+                        } elseif ($Master -match " $_ *([^\s]+)") {
+                            $MasterCmdArg = $Matches[0]
+                            If ($Slave -match " $_ *([^\s]+)") {
+                                $Slave = $Slave -replace " $_ *([^\s]+)",$MasterCmdArg
+                            } else {
+                                $Slave = $Slave + " $($MasterCmdArg)"    
+                            }
+                        } elseif ($Master -match " $_*([^\s]+)") {
+                            $MasterCmdArg = $Matches[0]
+                            If ($Slave -match " $_*([^\s]+)") {
+                                $Slave = $Slave -replace " $_*([^\s]+)",$MasterCmdArg
+                            } else {
+                                $Slave = $Slave + " $($MasterCmdArg)"    
+                            }
+                        }
+                    }
+                }
+                $Slave -replace '\s+', ' '
+            }
+            
+        }
+    } else {
+        $Slave
+    }
+}
+
 
