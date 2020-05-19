@@ -1,17 +1,17 @@
 if (!(IsLoaded(".\Includes\include.ps1"))) {. .\Includes\include.ps1;RegisterLoaded(".\Includes\include.ps1")}
 
 try {
-    $Request = Invoke-ProxiedWebRequest "http://api.zergpool.com:8080/api/status" -UseBasicParsing -Headers @{"Cache-Control" = "no-cache"} | ConvertFrom-Json 
+    $Request = Invoke-ProxiedWebRequest "https://www.ahashpool.com/api/status" -UseBasicParsing -Headers @{"Cache-Control" = "no-cache"} | ConvertFrom-Json 
 }
 catch { return }
 
 if (-not $Request) {return}
 
 $Name = (Get-Item $script:MyInvocation.MyCommand.Path).BaseName
-$HostSuffix = ".mine.zergpool.com"
-$PriceField = "actual_last24h"
-# $PriceField = "estimate_current"
-$DivisorMultiplier = 1000000000
+$HostSuffix = ".mine.ahashpool.com"
+# $PriceField = "actual_last24h"
+$PriceField = "estimate_current"
+$DivisorMultiplier = 1000000
  
 $Location = "US"
 
@@ -35,7 +35,7 @@ $Request | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty N
     if ($PoolConf.Wallet) {
         [PSCustomObject]@{
             Algorithm     = $PoolAlgorithm
-            Info          = ""
+            Info          = "$ahashpool_Coin $ahashpool_Coinname"
             Price         = $Stat.Live*$PoolConf.PricePenaltyFactor
             StablePrice   = $Stat.Week
             MarginOfError = $Stat.Week_Fluctuation

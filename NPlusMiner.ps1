@@ -1,6 +1,6 @@
 <#
 This file is part of NPlusMiner
-Copyright (c) 2018-2019 MrPlus
+Copyright (c) 2018-2020 MrPlus
 
 NPlusMiner is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 <#
 Product:        NPlusMiner
 File:           NPlusMiner.ps1
-version:        5.4.1
-version date:   20190809
+version:        7.3.2
+version date:   20200509
 #>
 
 param(
@@ -88,7 +88,7 @@ param(
 
 @"
 NPlusMiner
-Copyright (c) 2018-2019 MrPlus
+Copyright (c) 2018-2020 MrPlus
 
 This program comes with ABSOLUTELY NO WARRANTY.
 This is free software, and you are welcome to redistribute it
@@ -110,7 +110,22 @@ Write-Host -F Yellow " Copyright and license notices must be preserved."
     $Global:Config = [hashtable]::Synchronized(@{})
     $Global:Config | Add-Member -Force @{ConfigFile = $ConfigFile}
     $Global:Variables = [hashtable]::Synchronized(@{})
-    $Global:Variables | Add-Member -Force -MemberType ScriptProperty -Name 'StatusText' -Value{ $this._StatusText;$This._StatusText = @() }  -SecondValue { If (!$this._StatusText){$this._StatusText=@()};$this._StatusText+=$args[0];$Variables | Add-Member -Force @{RefreshNeeded = $True} }
+    $Global:Variables | Add-Member -Force -MemberType ScriptProperty -Name 'StatusText' -Value{ $this._StatusText;$This._StatusText = [System.Collections.ArrayList]::Synchronized(@()) }  -SecondValue { If (!$this._StatusText){$this._StatusText=[System.Collections.ArrayList]::Synchronized(@())};$this._StatusText+=$args[0];$Variables.RefreshNeeded = $True }
+
+    # Set Console size
+    $ConsoleHeight = 50
+    $ConsoleWidth = 160
+    $pswindow = (get-host).ui.rawui
+    $newsize = $pswindow.buffersize
+    # $newsize.height = 3000
+    $newsize.width = $ConsoleWidth
+    $pswindow.buffersize = $newsize
+    $newsize = $pswindow.windowsize
+    # $newsize.height = $ConsoleHeight
+    $newsize.width = $ConsoleWidth
+    $pswindow.windowsize = $newsize
+    
+    rv ConsoleHeight, ConsoleWidth, pswindow, newsize
 
     # Load Branding
     If (Test-Path ".\Config\Branding.json") {
@@ -155,6 +170,12 @@ Function Global:TimerUITick
                         If ($true) { #$_.Pool -in ($config.PoolName -replace "24hr","" -replace "plus","")) {
                             $Variables.EarningsPool = $_.Pool
                             $Variables.Earnings.($_.Pool) = $_
+                            $Variables.Earnings.($_.Pool).PaymentThreshold =
+                            If ($Config.PoolsConfig.($_.Pool).PayoutThreshold.($Config.Passwordcurrency)) {
+                                $Config.PoolsConfig.($_.Pool).PayoutThreshold.($Config.Passwordcurrency)
+                            } Else {
+                                $_.PaymentThreshold
+                            }
                         }
                     }
                     rv EarnTrack
@@ -165,7 +186,7 @@ Function Global:TimerUITick
         (compare -ReferenceObject $CheckedListBoxPools.Items -DifferenceObject ((Get-ChildItem ".\Pools").BaseName | sort -Unique) | ? {$_.SideIndicator -eq "=>"}).InputObject | % { if ($_ -ne $null){}$CheckedListBoxPools.Items.AddRange($_)}
         $Config.PoolName | foreach {$CheckedListBoxPools.SetItemChecked($CheckedListBoxPools.Items.IndexOf($_),$True)}
         }
-        $Variables | Add-Member -Force @{InCycle = $True}
+        $Variables.InCycle = $True
         # $MainForm.Number+=1
         $MainForm.Text = $Branding.ProductLable + " " + $Variables.CurrentVersion + " Runtime " + ("{0:dd\ \d\a\y\s\ hh\:mm}" -f ((get-date)-$Variables.ScriptStartDate)) + " Path: " + (Split-Path $script:MyInvocation.MyCommand.Path)
         $host.UI.RawUI.WindowTitle = $Branding.ProductLable + " " + $Variables.CurrentVersion + " Runtime " + ("{0:dd\ \d\a\y\s\ hh\:mm}" -f ((get-date)-$Variables.ScriptStartDate)) + " Path: " + (Split-Path $script:MyInvocation.MyCommand.Path)
@@ -184,13 +205,13 @@ Function Global:TimerUITick
             # https://stackoverflow.com/questions/8466343/why-controls-do-not-want-to-get-removed
 
             If (Test-Path ".\logs\DailyEarnings.csv"){
-                $Chart1 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'Front7DaysEarnings' -Width 505 -Height 85"
+                $Chart1 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'Front7DaysEarnings' -Width 505 -Height 85 -Currency $($Config.Passwordcurrency)"
                 $Chart1.top = 74
                 $Chart1.left = 0
                 $RunPage.Controls.Add($Chart1)
                 $Chart1.BringToFront()
 
-                $Chart2 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'DayPoolSplit' -Width 200 -Height 85"
+                $Chart2 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'DayPoolSplit' -Width 200 -Height 85 -Currency $($Config.Passwordcurrency)"
                 $Chart2.top = 74
                 $Chart2.left = 500
                 $RunPage.Controls.Add($Chart2)
@@ -206,15 +227,15 @@ Function Global:TimerUITick
                     @{Name="Balance";Expression={$_.Balance}},
                     # @{Name="Unpaid";Expression={$_.total_unpaid}},
                     # @{Name="BTC/D";Expression={"{0:N8}" -f ($_.BTCD)}},
-                    @{Name="1h m$([char]0x20BF)/D";Expression={"{0:N3}" -f ($_.Growth1*1000*24)}},
-                    @{Name="6h m$([char]0x20BF)/D";Expression={"{0:N3}" -f ($_.Growth6*1000*4)}},
-                    @{Name="24h m$([char]0x20BF)/D";Expression={"{0:N3}" -f ($_.Growth24*1000)}},
+                    @{Name="1h $((Get-DisplayCurrency $_.Growth1 24).UnitStringPerDay)";Expression={(Get-DisplayCurrency $_.Growth1 24).RoundedValue}},
+                    @{Name="6h $((Get-DisplayCurrency $_.Growth6 4).UnitStringPerDay)";Expression={(Get-DisplayCurrency $_.Growth6 4).RoundedValue}},
+                    @{Name="24h $((Get-DisplayCurrency $_.Growth24).UnitStringPerDay)";Expression={(Get-DisplayCurrency $_.Growth24).RoundedValue}},
 
                     @{Name = "Est. Pay Date"; Expression = {if ($_.EstimatedPayDate -is 'DateTime') {$_.EstimatedPayDate.ToShortDateString()} else {$_.EstimatedPayDate}}},
 
                     @{Name="PaymentThreshold";Expression={"$($_.PaymentThreshold) ($('{0:P0}' -f $($_.Balance / $_.PaymentThreshold)))"}}#,
                     # @{Name="Wallet";Expression={$_.Wallet}}
-                ) | Sort "1h m$([char]0x20BF)/D","6h m$([char]0x20BF)/D","24h m$([char]0x20BF)/D" -Descending)
+                ) | Sort "1h $((Get-DisplayCurrency $_.Growth1 24).UnitStringPerDay)","6h $((Get-DisplayCurrency $_.Growth6 4).UnitStringPerDay)","24h $((Get-DisplayCurrency $_.Growth24).UnitStringPerDay)" -Descending)
                 $EarningsDGV.DataSource = [System.Collections.ArrayList]@($DisplayEarnings)
                 $EarningsDGV.ClearSelection()
             }
@@ -227,12 +248,15 @@ Function Global:TimerUITick
                     @{Name = "Coin"; Expression={$_.Pools.PSObject.Properties.Value | ForEach {"$($_.Info)"}}},
                     @{Name = "Pool"; Expression={$_.Pools.PSObject.Properties.Value | ForEach {"$($_.Name)"}}},
                     @{Name = "Speed"; Expression={$_.HashRates.PSObject.Properties.Value | ForEach {if($_ -ne $null){"$($_ | ConvertTo-Hash)/s"}else{"Benchmarking"}}}},
-                    @{Name = "mBTC/Day"; Expression={$_.Profits.PSObject.Properties.Value*1000 | ForEach {if($_ -ne $null){$_.ToString("N3")}else{"Benchmarking"}}}},
-                    @{Name = "BTC/Day"; Expression={$_.Profits.PSObject.Properties.Value | ForEach {if($_ -ne $null){$_.ToString("N5")}else{"Benchmarking"}}}},
-                    @{Name = "BTC/GH/Day"; Expression={$_.Pools.PSObject.Properties.Value.Price | ForEach {($_*1000000000).ToString("N5")}}}
+                    # @{Name = "mBTC/Day"; Expression={$_.Profits.PSObject.Properties.Value | ForEach {if($_ -ne $null){($_*1000).ToString("N3")}else{"Benchmarking"}}}},
+                    @{Name = "mBTC/Day"; Expression={(($_.Profits.PSObject.Properties.Value | Measure -Sum).Sum *1000).ToString("N3")}},
+                    # @{Name = "BTC/Day"; Expression={$_.Profits.PSObject.Properties.Value | ForEach {if($_ -ne $null){$_.ToString("N5")}else{"Benchmarking"}}}},
+                    @{Name = "BTC/Day"; Expression={(($_.Profits.PSObject.Properties.Value | Measure -Sum).Sum).ToString("N3")}},
+                    # @{Name = "BTC/GH/Day"; Expression={$_.Pools.PSObject.Properties.Value.Price | ForEach {($_*1000000000).ToString("N15")}}}
+                    @{Name = "BTC/GH/Day"; Expression={(($_.Pools.PSObject.Properties.Value.Price | Measure -Sum).Sum *1000000000).ToString("N5")}}
                 ) | sort "mBTC/Day" -Descending)
                 If ($Config.ShowOnlyTopCoins){
-                    $EstimationsDGV.DataSource = [System.Collections.ArrayList]@($DisplayEstimations | sort "mBTC/Day" -Descending | Group "Algorithm" | % { $_.Group | select -First 1} | sort "mBTC/Day" -Descending)
+                    $EstimationsDGV.DataSource = [System.Collections.ArrayList]@($DisplayEstimations | sort "mBTC/Day" -Descending | Group "Type","Algorithm" | % { $_.Group | select -First 1} | sort "mBTC/Day" -Descending)
                 } else {
                     $EstimationsDGV.DataSource = [System.Collections.ArrayList]@($DisplayEstimations)
                 }
@@ -278,7 +302,17 @@ Function Global:TimerUITick
             }
             
             If ($Variables.ActiveMinerPrograms) {
-                $RunningMinersDGV.DataSource = [System.Collections.ArrayList]@($Variables.ActiveMinerPrograms | ? {$_.Status -eq "Running"} | select Type,Algorithms,Coin,Name,@{Name="HashRate";Expression={"$($_.HashRate | ConvertTo-Hash)/s"}},@{Name="Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.Active}},@{Name="Total Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.TotalActive}},Host | sort Type)
+                # $RunningMinersDGV.DataSource = [System.Collections.ArrayList]@($Variables.ActiveMinerPrograms | ? {$_.Status -eq "Running"} | select Type,Algorithms,Coin,Name,@{Name="HashRate";Expression={"$($_.HashRate | ConvertTo-Hash)/s"}},@{Name="Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.Active}},@{Name="Total Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.TotalActive}},Host | sort Type)
+                $RunningMinersDGV.DataSource = [System.Collections.ArrayList]@($Variables.ActiveMinerPrograms.Clone() | ? {$_.Status -eq "Running"} | select @(
+                    @{Name = "Type";Expression={$_.Type}},
+                    @{Name = "Algorithm";Expression={$_.Algorithms}},
+                    @{Name = "Coin"; Expression={$_.Coin}},
+                    @{Name = "Miner";Expression={$_.Name}},
+                    @{Name="HashRate";Expression={"$($_.HashRate | ConvertTo-Hash)/s"}},
+                    @{Name ="Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.Active}},
+                    @{Name ="Total Active";Expression={"{0:hh}:{0:mm}:{0:ss}" -f $_.TotalActive}},
+                    @{Name = "Pool"; Expression={$_.Pools.PSObject.Properties.Value | ForEach {"$($_.Name)"}}} ) | sort Type
+                )
                 $RunningMinersDGV.ClearSelection()
             
                 [Array] $processRunning = $Variables.ActiveMinerPrograms | Where { $_.Status -eq "Running" }
@@ -286,12 +320,13 @@ Function Global:TimerUITick
                     # Update-Status("No miner running")
                 }
             }
-            $LabelBTCPrice.text = If($Variables.Rates.$Currency -gt 0){"BTC/$($Config.Currency) $($Variables.Rates.($Config.Currency))"}
-            $Variables | Add-Member -Force @{InCycle = $False}
+            $LabelBTCPrice.text = If($Variables.Rates.$Currency -gt 0){"$($Config.Passwordcurrency)/$($Config.Currency) $($Variables.Rates.($Config.Currency))"}
+            $Variables.InCycle = $False
         
         
             If ($Variables.Earnings.Values -ne $Null){
-                $LabelBTCD.Text = "Avg: " +("{0:N6}" -f ($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum) + " $([char]0x20BF)/D   |   " + ("{0:N3}" -f (($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum*1000)) + " m$([char]0x20BF)/D"
+                $LabelBTCD.Text = "Avg: " + ((Get-DisplayCurrency ($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum)).DisplayStringPerDay
+                
                 
                 $LabelEarningsDetails.Lines = @()
                 # If ((($Variables.Earnings.Values | measure -Property Growth1 -Sum).sum*1000*24) -lt ((($Variables.Earnings.Values | measure -Property BTCD -Sum).sum*1000)*0.999)) {
@@ -304,7 +339,7 @@ Function Global:TimerUITick
                         {$_ -lt 0}
                             {"<"}
                     }
-                $LabelEarningsDetails.Lines += "Last  1h: " + ("{0:N3}" -f (($Variables.Earnings.Values | measure -Property Growth1 -Sum).sum*1000*24)) + " m$([char]0x20BF)/D " + $TrendSign
+                $LabelEarningsDetails.Lines += "Last  1h: " + ((Get-DisplayCurrency ($Variables.Earnings.Values | measure -Property Growth1 -Sum).sum 24)).DisplayStringPerDay + " " + $TrendSign
                 $TrendSign = switch ([Math]::Round((($Variables.Earnings.Values | measure -Property Growth6 -Sum).sum*1000*4),3) - [Math]::Round((($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum*1000),3)) {
                         {$_ -eq 0}
                             {"="}
@@ -313,7 +348,7 @@ Function Global:TimerUITick
                         {$_ -lt 0}
                             {"<"}
                     }
-                $LabelEarningsDetails.Lines += "Last  6h: " + ("{0:N3}" -f (($Variables.Earnings.Values | measure -Property Growth6 -Sum).sum*1000*4)) + " m$([char]0x20BF)/D " + $TrendSign
+                $LabelEarningsDetails.Lines += "Last  6h: " + ((Get-DisplayCurrency ($Variables.Earnings.Values | measure -Property Growth6 -Sum).sum 4)).DisplayStringPerDay + " " + $TrendSign
                 $TrendSign = switch ([Math]::Round((($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum*1000),3) - [Math]::Round((($Variables.Earnings.Values | measure -Property BTCD -Sum).sum*1000*0.96),3)) {
                         {$_ -eq 0}
                             {"="}
@@ -322,7 +357,7 @@ Function Global:TimerUITick
                         {$_ -lt 0}
                             {"<"}
                     }
-                $LabelEarningsDetails.Lines += "Last 24h: " + ("{0:N3}" -f (($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum*1000)) + " m$([char]0x20BF)/D " + $TrendSign
+                $LabelEarningsDetails.Lines += "Last 24h: " + ((Get-DisplayCurrency ($Variables.Earnings.Values | measure -Property Growth24 -Sum).sum)).DisplayStringPerDay + " " + $TrendSign
                 rv TrendSign
             } else {
                 $LabelBTCD.Text = "Waiting data from pools."
@@ -332,9 +367,9 @@ Function Global:TimerUITick
             if (!(IsLoaded(".\Includes\include.ps1"))) {. .\Includes\include.ps1;RegisterLoaded(".\Includes\include.ps1")}
             if (!(IsLoaded(".\Includes\Core.ps1"))) {. .\Includes\Core.ps1;RegisterLoaded(".\Includes\Core.ps1")}
         
-            $Variables | Add-Member -Force @{CurrentProduct = (Get-Content .\Version.json | ConvertFrom-Json).Product}
-            $Variables | Add-Member -Force @{CurrentVersion = [Version](Get-Content .\Version.json | ConvertFrom-Json).Version}
-            $Variables | Add-Member -Force @{CurrentVersionAutoUpdated = (Get-Content .\Version.json | ConvertFrom-Json).AutoUpdated.Value}
+            $Variables.CurrentProduct = (Get-Content .\Version.json | ConvertFrom-Json).Product
+            $Variables.CurrentVersion = [Version](Get-Content .\Version.json | ConvertFrom-Json).Version
+            $Variables.CurrentVersionAutoUpdated = (Get-Content .\Version.json | ConvertFrom-Json).AutoUpdated.Value
             if ((Get-Content .\Version.json | ConvertFrom-Json).AutoUpdated -and $LabelNotifications.Lines[$LabelNotifications.Lines.Count-1] -ne "Auto Updated on $($Variables.CurrentVersionAutoUpdated)"){
                 $LabelNotifications.ForeColor = "Green"
                 Update-Notifications("Running $($Variables.CurrentProduct) Version $([Version]$Variables.CurrentVersion)")
@@ -391,7 +426,7 @@ Function Global:TimerUITick
                 # ) | Out-Host
 
                 If ($Config.ShowOnlyTopCoins){
-                    $DisplayEstimations | sort "mBTC/Day" -Descending | Group "Algorithm" | % { $_.Group | select -First 1} | sort Type,"mBTC/Day" -Descending | Format-Table -GroupBy Type | Out-Host
+                    $DisplayEstimations | sort "mBTC/Day" -Descending | Group "Type","Algorithm" | % { $_.Group | select -First 1} | sort Type,"mBTC/Day" -Descending | Format-Table -GroupBy Type | Out-Host
                 } else {
                     $DisplayEstimations | sort Type,"mBTC/Day" -Descending | Format-Table -GroupBy Type | Out-Host
                 }
@@ -509,12 +544,23 @@ Function PrepareWriteConfig{
         $Config | Add-Member -Force @{$_.Tag = [Int]$_.Text}
     }
     $Config | Add-Member -Force @{$CheckedListBoxPools.Tag = $CheckedListBoxPools.CheckedItems}
+    
+    $ServermodePageControls | ? {(($_.gettype()).Name -eq "CheckBox")} | foreach {$Config | Add-Member -Force @{$_.Tag = $_.Checked}}
+    $ServermodePageControls | ? {(($_.gettype()).Name -eq "TextBox")} | foreach {$Config | Add-Member -Force @{$_.Tag = $_.Text}}
 
     $MonitoringSettingsControls | ? {(($_.gettype()).Name -eq "CheckBox")} | foreach {$Config | Add-Member -Force @{$_.Tag = $_.Checked}}
     $MonitoringSettingsControls | ? {(($_.gettype()).Name -eq "TextBox")} | foreach {$Config | Add-Member -Force @{$_.Tag = $_.Text}}
 
     Write-Config -ConfigFile $ConfigFile -Config $Config
     $Config = Load-Config -ConfigFile $ConfigFile
+    
+    $ServerPasswd = ConvertTo-SecureString $Config.Server_Password -AsPlainText -Force
+    $ServerCreds = New-Object System.Management.Automation.PSCredential ($Config.Server_User, $ServerPasswd)
+    $Variables.ServerCreds = $ServerCreds
+    $ServerClientPasswd = ConvertTo-SecureString $Config.Server_ClientPassword -AsPlainText -Force
+    $ServerClientCreds = New-Object System.Management.Automation.PSCredential ($Config.Server_ClientUser, $ServerClientPasswd)
+    $Variables.ServerClientCreds = $ServerClientCreds
+    
     $MainForm.Refresh
     # [windows.forms.messagebox]::show("Please restart NPlusMiner",'Config saved','ok','Information') | out-null
 }
@@ -653,9 +699,9 @@ $SelGPUDSTM = $Config.SelGPUDSTM
 $SelGPUCC = $Config.SelGPUCC
 $MainForm | Add-Member -Name "Variables" -Value $Variables -MemberType NoteProperty -Force
 
-$Variables | Add-Member -Force @{CurrentProduct = (Get-Content .\Version.json | ConvertFrom-Json).Product}
-$Variables | Add-Member -Force @{CurrentVersion = [Version](Get-Content .\Version.json | ConvertFrom-Json).Version}
-$Variables | Add-Member -Force @{CurrentVersionAutoUpdated = (Get-Content .\Version.json | ConvertFrom-Json).AutoUpdated.Value}
+$Variables.CurrentProduct = (Get-Content .\Version.json | ConvertFrom-Json).Product
+$Variables.CurrentVersion = [Version](Get-Content .\Version.json | ConvertFrom-Json).Version
+$Variables.CurrentVersionAutoUpdated = (Get-Content .\Version.json | ConvertFrom-Json).AutoUpdated.Value
 $Variables.StatusText = "Idle"
 $TabControl = New-object System.Windows.Forms.TabControl
 
@@ -674,6 +720,8 @@ $MonitoringPage = New-Object System.Windows.Forms.TabPage
 $MonitoringPage.Text = "Monitoring"
 $EstimationsPage = New-Object System.Windows.Forms.TabPage
 $EstimationsPage.Text = "Benchmarks"
+$ServerModePage = New-Object System.Windows.Forms.TabPage
+$ServerModePage.Text = "Server Mode"
 
 $tabControl.DataBindings.DefaultDataSourceUpdateMode = 0
 $tabControl.Location = New-Object System.Drawing.Point(10,91)
@@ -681,7 +729,7 @@ $tabControl.Name = "tabControl"
 $tabControl.width = 720
 $tabControl.height = 359
 $MainForm.Controls.Add($tabControl)
-$TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $MonitoringPage, $EstimationsPage))
+$TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $MonitoringPage, $EstimationsPage, $ServerModePage))
 
 # Form Controls
     $MainFormControls = @()
@@ -700,7 +748,7 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
     $LabelEarningsDetails.MultiLine                = $true
     $LabelEarningsDetails.text                     = ""
     $LabelEarningsDetails.AutoSize                 = $false
-    $LabelEarningsDetails.width                    = 200 #382
+    $LabelEarningsDetails.width                    = 382 #200
     $LabelEarningsDetails.height                   = 47 #62
     $LabelEarningsDetails.location                 = New-Object System.Drawing.Point(57,2)
     $LabelEarningsDetails.Font                     = 'lucida console,10'
@@ -813,13 +861,13 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
     $RunPageControls += $LabelEarnings
 
     If (Test-Path ".\logs\DailyEarnings.csv"){
-        $Chart1 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'Front7DaysEarnings' -Width 505 -Height 85"
+        $Chart1 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'Front7DaysEarnings' -Width 505 -Height 85 -Currency $($Config.Passwordcurrency)"
         $Chart1.top = 74
         $Chart1.left = 2
         $RunPageControls += $Chart1
     }
     If (Test-Path ".\logs\DailyEarnings.csv"){
-        $Chart2 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'DayPoolSplit' -Width 200 -Height 85"
+        $Chart2 = Invoke-Expression -Command ".\Includes\Charting.ps1 -Chart 'DayPoolSplit' -Width 200 -Height 85 -Currency $($Config.Passwordcurrency)"
         $Chart2.top = 74
         $Chart2.left = 500
         $RunPageControls += $Chart2
@@ -854,9 +902,20 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
     $LabelCopyright.Size            = New-Object System.Drawing.Size(200,20)
     $LabelCopyright.LinkColor       = "BLUE"
     $LabelCopyright.ActiveLinkColor = "BLUE"
-    $LabelCopyright.Text            = "Copyright (c) 2018-2019 MrPlus"
+    $LabelCopyright.Text            = "Copyright (c) 2018-2020 MrPlus"
     $LabelCopyright.add_Click({[system.Diagnostics.Process]::start("https://github.com/MrPlusGH/NPlusMiner/blob/master/LICENSE")})
     $RunPageControls += $LabelCopyright
+
+    $LabelWebUI                 = New-Object System.Windows.Forms.LinkLabel
+    # $LabelWebUI.Location        = New-Object System.Drawing.Size(415,61)
+    # $LabelWebUI.Size            = New-Object System.Drawing.Size(200,20)
+    $LabelWebUI.Location        = New-Object System.Drawing.Size(250,246)
+    $LabelWebUI.Size            = New-Object System.Drawing.Size(200,20)
+    $LabelWebUI.LinkColor       = "BLUE"
+    $LabelWebUI.ActiveLinkColor = "BLUE"
+    $LabelWebUI.Text            = "Web interface"
+    $LabelWebUI.add_Click({[system.Diagnostics.Process]::start("http://$($Config.Server_ClientIP):$($Config.Server_ClientPort)/Status")})
+    $RunPageControls += $LabelWebUI
 
     $LabelRunningMiners                          = New-Object system.Windows.Forms.Label
     $LabelRunningMiners.text                     = "Running Miners"
@@ -967,6 +1026,202 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
 
     # $DblBuff = ($EstimationsDGV.GetType()).GetProperty("DoubleBuffered", ('Instance','NonPublic'))
     # $DblBuff.SetValue($MainForm, $Truen, $null)
+
+# Server mode Page Controls
+    $ServermodePageControls = @()
+    
+    $CheckBoxStandalone                       = New-Object system.Windows.Forms.CheckBox
+    $CheckBoxStandalone.Tag                   = "Server_Standalone"
+    $CheckBoxStandalone.text                  = "Standalone"
+    $CheckBoxStandalone.AutoSize              = $false
+    $CheckBoxStandalone.width                 = 200
+    $CheckBoxStandalone.height                = 20
+    $CheckBoxStandalone.location              = New-Object System.Drawing.Point(2,2)
+    $CheckBoxStandalone.Font                  = 'Microsoft Sans Serif,10'
+    $CheckBoxStandalone.Checked               = $Config.Server_Standalone
+    $ServermodePageControls += $CheckBoxStandalone
+
+    $CheckBoxBeAServer                       = New-Object system.Windows.Forms.CheckBox
+    $CheckBoxBeAServer.Tag                   = "Server_On"
+    $CheckBoxBeAServer.text                  = "Be a server"
+    $CheckBoxBeAServer.AutoSize              = $false
+    $CheckBoxBeAServer.width                 = 140
+    $CheckBoxBeAServer.height                = 20
+    $CheckBoxBeAServer.location              = New-Object System.Drawing.Point(2,24)
+    $CheckBoxBeAServer.Font                  = 'Microsoft Sans Serif,10'
+    $CheckBoxBeAServer.Checked               =   $Config.Server_On
+    $ServermodePageControls += $CheckBoxBeAServer
+
+    $LabelServerPort                          = New-Object system.Windows.Forms.Label
+    $LabelServerPort.text                     = "Server Port"
+    $LabelServerPort.AutoSize                 = $false
+    $LabelServerPort.width                    = 120
+    $LabelServerPort.height                   = 20
+    $LabelServerPort.location                 = New-Object System.Drawing.Point(2,48)
+    $LabelServerPort.Font                     = 'Microsoft Sans Serif,10'
+    # $LabelServerPort.Enabled                  = $CheckBoxBeAServer.Checked
+    $ServermodePageControls += $LabelServerPort
+
+    $TBServerPort                          = New-Object system.Windows.Forms.TextBox
+    $TBServerPort.Tag                      = "Server_Port"
+    $TBServerPort.MultiLine                = $False
+    # $TBServerPort.Scrollbars              = "Vertical" 
+    $TBServerPort.text                     = $Config.Server_Port
+    $TBServerPort.AutoSize                 = $false
+    $TBServerPort.width                    = 50
+    $TBServerPort.height                   = 20
+    $TBServerPort.location                 = New-Object System.Drawing.Point(122,48)
+    $TBServerPort.Font                     = 'Microsoft Sans Serif,10'
+    # $TBServerPort.Enabled                  = $CheckBoxBeAServer.Checked
+    $ServermodePageControls += $TBServerPort
+
+    $LabelServerUser                          = New-Object system.Windows.Forms.Label
+    $LabelServerUser.text                     = "Server User"
+    $LabelServerUser.AutoSize                 = $false
+    $LabelServerUser.width                    = 120
+    $LabelServerUser.height                   = 20
+    $LabelServerUser.location                 = New-Object System.Drawing.Point(2,72)
+    $LabelServerUser.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerUser
+
+    $TBServerUser                          = New-Object system.Windows.Forms.TextBox
+    $TBServerUser.Tag                      = "Server_User"
+    $TBServerUser.MultiLine                = $False
+    # $TBServerIP.Scrollbars              = "Vertical" 
+    $TBServerUser.text                     = $Config.Server_User
+    $TBServerUser.AutoSize                 = $false
+    $TBServerUser.width                    = 150
+    $TBServerUser.height                   = 20
+    $TBServerUser.location                 = New-Object System.Drawing.Point(122,72)
+    $TBServerUser.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerUser
+
+    $LabelServerPassword                          = New-Object system.Windows.Forms.Label
+    $LabelServerPassword.text                     = "Server Password"
+    $LabelServerPassword.AutoSize                 = $false
+    $LabelServerPassword.width                    = 120
+    $LabelServerPassword.height                   = 20
+    $LabelServerPassword.location                 = New-Object System.Drawing.Point(274,72)
+    $LabelServerPassword.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerPassword
+
+    $TBServerPassword                          = New-Object system.Windows.Forms.TextBox
+    $TBServerPassword.Tag                      = "Server_Password"
+    $TBServerPassword.MultiLine                = $False
+    # $TBServerPassword.Scrollbars              = "Vertical" 
+    $TBServerPassword.text                     = if ($Config.Server_Password) {$Config.Server_Password} else {(New-Guid).guid}
+    $TBServerPassword.AutoSize                 = $false
+    $TBServerPassword.width                    = 150
+    $TBServerPassword.height                   = 20
+    $TBServerPassword.location                 = New-Object System.Drawing.Point(396,72)
+    $TBServerPassword.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerPassword
+    
+    $CheckBoxServerClient                       = New-Object system.Windows.Forms.CheckBox
+    $CheckBoxServerClient.Tag                   = "Server_Client"
+    $CheckBoxServerClient.text                  = "Use a server"
+    $CheckBoxServerClient.AutoSize              = $false
+    $CheckBoxServerClient.width                 = 140
+    $CheckBoxServerClient.height                = 20
+    $CheckBoxServerClient.location              = New-Object System.Drawing.Point(2,94)
+    $CheckBoxServerClient.Font                  = 'Microsoft Sans Serif,10'
+    $CheckBoxServerClient.Checked               =   $Config.Server_Client
+    $ServermodePageControls += $CheckBoxServerClient
+
+    $LabelServerClientIP                          = New-Object system.Windows.Forms.Label
+    $LabelServerClientIP.text                     = "Server IP"
+    $LabelServerClientIP.AutoSize                 = $false
+    $LabelServerClientIP.width                    = 120
+    $LabelServerClientIP.height                   = 20
+    $LabelServerClientIP.location                 = New-Object System.Drawing.Point(2,116)
+    $LabelServerClientIP.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerClientIP
+
+    $TBServerClientIP                          = New-Object system.Windows.Forms.TextBox
+    $TBServerClientIP.Tag                      = "Server_ClientIP"
+    $TBServerClientIP.MultiLine                = $False
+    # $TBServerClientIP.Scrollbars              = "Vertical" 
+    $TBServerClientIP.text                     = $Config.Server_ClientIP
+    $TBServerClientIP.AutoSize                 = $false
+    $TBServerClientIP.width                    = 150
+    $TBServerClientIP.height                   = 20
+    $TBServerClientIP.location                 = New-Object System.Drawing.Point(122,116)
+    $TBServerClientIP.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerClientIP
+
+    $LabelServerClientPort                          = New-Object system.Windows.Forms.Label
+    $LabelServerClientPort.text                     = "Port"
+    $LabelServerClientPort.AutoSize                 = $false
+    $LabelServerClientPort.width                    = 120
+    $LabelServerClientPort.height                   = 20
+    $LabelServerClientPort.location                 = New-Object System.Drawing.Point(274,116)
+    $LabelServerClientPort.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerClientPort
+
+    $TBServerClientPort                          = New-Object system.Windows.Forms.TextBox
+    $TBServerClientPort.Tag                      = "Server_ClientPort"
+    $TBServerClientPort.MultiLine                = $False
+    # $TBServerClientPort.Scrollbars              = "Vertical" 
+    $TBServerClientPort.text                     = $Config.Server_ClientPort
+    $TBServerClientPort.AutoSize                 = $false
+    $TBServerClientPort.width                    = 50
+    $TBServerClientPort.height                   = 20
+    $TBServerClientPort.location                 = New-Object System.Drawing.Point(396,116)
+    $TBServerClientPort.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerClientPort
+
+    $LabelServerClientUser                          = New-Object system.Windows.Forms.Label
+    $LabelServerClientUser.text                     = "Server User"
+    $LabelServerClientUser.AutoSize                 = $false
+    $LabelServerClientUser.width                    = 120
+    $LabelServerClientUser.height                   = 20
+    $LabelServerClientUser.location                 = New-Object System.Drawing.Point(2,138)
+    $LabelServerClientUser.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerClientUser
+
+    $TBServerClientUser                          = New-Object system.Windows.Forms.TextBox
+    $TBServerClientUser.Tag                      = "Server_ClientUser"
+    $TBServerClientUser.MultiLine                = $False
+    # $TBServerClientUser.Scrollbars              = "Vertical" 
+    $TBServerClientUser.text                     = $Config.Server_ClientUser
+    $TBServerClientUser.AutoSize                 = $false
+    $TBServerClientUser.width                    = 150
+    $TBServerClientUser.height                   = 20
+    $TBServerClientUser.location                 = New-Object System.Drawing.Point(122,138)
+    $TBServerClientUser.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerClientUser
+
+    $LabelServerClientPassword                          = New-Object system.Windows.Forms.Label
+    $LabelServerClientPassword.text                     = "Server Password"
+    $LabelServerClientPassword.AutoSize                 = $false
+    $LabelServerClientPassword.width                    = 120
+    $LabelServerClientPassword.height                   = 20
+    $LabelServerClientPassword.location                 = New-Object System.Drawing.Point(274,138)
+    $LabelServerClientPassword.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $LabelServerClientPassword
+
+    $TBServerClientPassword                          = New-Object system.Windows.Forms.TextBox
+    $TBServerClientPassword.Tag                      = "Server_ClientPassword"
+    $TBServerClientPassword.MultiLine                = $False
+    # $TBServerClientPassword.Scrollbars              = "Vertical" 
+    $TBServerClientPassword.text                     = $Config.Server_ClientPassword
+    $TBServerClientPassword.AutoSize                 = $false
+    $TBServerClientPassword.width                    = 150
+    $TBServerClientPassword.height                   = 20
+    $TBServerClientPassword.location                 = New-Object System.Drawing.Point(396,138)
+    $TBServerClientPassword.Font                     = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $TBServerClientPassword
+
+    $ButtonWriteServerConfig                         = New-Object system.Windows.Forms.Button
+    $ButtonWriteServerConfig.text                    = "Save Config"
+    $ButtonWriteServerConfig.width                   = 100
+    $ButtonWriteServerConfig.height                  = 30
+    $ButtonWriteServerConfig.location                = New-Object System.Drawing.Point(610,300)
+    $ButtonWriteServerConfig.Font                    = 'Microsoft Sans Serif,10'
+    $ServermodePageControls += $ButtonWriteServerConfig
+
+    $ButtonWriteServerConfig.Add_Click({PrepareWriteConfig})
+    
 
 # Config Page Controls
     $ConfigPageControls = @()
@@ -1141,7 +1396,7 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
     $ConfigPageControls += $TBCurrency
 
     $LabelPwdCurrency                          = New-Object system.Windows.Forms.Label
-    $LabelPwdCurrency.text                     = "Pwd Currency"
+    $LabelPwdCurrency.text                     = "Payout Currency"
     $LabelPwdCurrency.AutoSize                 = $false
     $LabelPwdCurrency.width                    = 120
     $LabelPwdCurrency.height                   = 20
@@ -1275,7 +1530,7 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
                 $StartPort = 4068
                 Update-Status("Finding available TCP Port for $($This.Text)")
                 $Port = Get-FreeTcpPort($StartPort)
-                $Variables | Add-Member -Force @{"$($This.Text)MinerAPITCPPort" = $Port}
+                $Variables."$($This.Text)MinerAPITCPPort" = $Port
                 Update-Status("Miners API Port: $($Port)")
                 $StartPort = $Port+1
             }
@@ -1301,7 +1556,7 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
                 $StartPort = 4068
                 Update-Status("Finding available TCP Port for $($This.Text)")
                 $Port = Get-FreeTcpPort($StartPort)
-                $Variables | Add-Member -Force @{"$($This.Text)MinerAPITCPPort" = $Port}
+                $Variables."$($This.Text)MinerAPITCPPort" = $Port
                 Update-Status("Miners API Port: $($Port)")
                 $StartPort = $Port+1
             }
@@ -1327,7 +1582,7 @@ $TabControl.Controls.AddRange(@($RunPage, $SwitchingPage, $ConfigPage, $Monitori
                     $StartPort = 4068
                     Update-Status("Finding available TCP Port for $($This.Text)")
                     $Port = Get-FreeTcpPort($StartPort)
-                    $Variables | Add-Member -Force @{"$($This.Text)MinerAPITCPPort" = $Port}
+                    $Variables."$($This.Text)MinerAPITCPPort" = $Port
                     Update-Status("Miners API Port: $($Port)")
                     $StartPort = $Port + 1
                 }
@@ -1723,7 +1978,7 @@ $ButtonPause.Add_Click( {
             $LabelBTCD.Text = "Mining Paused | $($Branding.ProductLable) $($Variables.CurrentVersion)"
             
             If ($Variables.DonationRunning) {
-                $Variables | Add-Member -Force @{ DonationRunning = $False }
+                $Variables.DonationRunning = $False 
                 $ConfigLoad = Get-Content $Config.ConfigFile | ConvertFrom-json
                 $ConfigLoad | % {$_.psobject.properties | sort Name | % {$Config | Add-Member -Force @{$_.Name = $_.Value}}}
                 $Config | Add-Member -Force -MemberType ScriptProperty -Name "PoolsConfig" -Value {
@@ -1746,7 +2001,7 @@ $ButtonPause.Add_Click( {
         else {
             $Variables.Paused = $False
             $ButtonPause.Text = "Pause"
-            $Variables | Add-Member -Force @{LastDonated = (Get-Date).AddDays(-1).AddHours(1)}
+            $Variables.LastDonated = (Get-Date).AddDays(-1).AddHours(1)
             $TimerUI.Start()
 
             # Stop and start mining to immediately switch to unpaused state without waiting for current sleep to finish
@@ -1779,7 +2034,7 @@ $ButtonStart.Add_Click( {
             # $TimerUI.Interval = 1000
 
             If ($Variables.DonationRunning) {
-                $Variables | Add-Member -Force @{ DonationRunning = $False }
+                $Variables.DonationRunning = $False 
                 $ConfigLoad = Get-Content $Config.ConfigFile | ConvertFrom-json
                 $ConfigLoad | % {$_.psobject.properties | sort Name | % {$Config | Add-Member -Force @{$_.Name = $_.Value}}}
                 $Config | Add-Member -Force -MemberType ScriptProperty -Name "PoolsConfig" -Value {
@@ -1805,8 +2060,8 @@ $ButtonStart.Add_Click( {
             PrepareWriteConfig
             $ButtonStart.Text = "Stop"
             InitApplication
-            $Variables | add-Member -Force @{MainPath = (Split-Path $script:MyInvocation.MyCommand.Path)}
-            $Variables | Add-Member -Force @{LastDonated = (Get-Date).AddDays(-1).AddHours(1)}
+            $Variables.MainPath = (Split-Path $script:MyInvocation.MyCommand.Path)
+            $Variables.LastDonated = (Get-Date).AddDays(-1).AddHours(1)
 
             Start-IdleTracking
 
@@ -1836,6 +2091,7 @@ $MainForm.controls.AddRange($MainFormControls)
 $RunPage.controls.AddRange(@($RunPageControls))
 $SwitchingPage.controls.AddRange(@($SwitchingPageControls))
 $EstimationsPage.Controls.AddRange(@($EstimationsDGV))
+$ServerModePage.Controls.AddRange($ServermodePageControls)
 $ConfigPage.controls.AddRange($ConfigPageControls)
 $GroupMonitoringSettings.Controls.AddRange($MonitoringSettingsControls)
 $MonitoringPage.controls.AddRange($MonitoringPageControls)

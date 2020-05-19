@@ -46,7 +46,7 @@ function Get-MemoryUsage {
       If (!$Variables.PerfCounterProcPath) {
         $proc_path=((Get-Counter "\Process(*)\ID Process").CounterSamples | ? {$_.RawValue -eq $pid}).Path  
         $proc_path = $proc_path -replace "id process","Working Set - Private"
-        $Variables | Add-Member -Force @{PerfCounterProcPath = $proc_path}
+        $Variables.PerfCounterProcPath = $proc_path
       }
       
       # Write-Host -Object ('PagedMemorySize  : {0:n1} MB ' -f ($P.PagedMemorySize/1024))
@@ -65,7 +65,7 @@ Function GetNVIDIADriverVersion {
  
 Function Global:RegisterLoaded ($File) {
     New-Item -Path function: -Name script:"$((Get-FileHash (Resolve-Path $File)).Hash)" -Value {$true} -EA SilentlyContinue | Add-Member @{"File" = (Resolve-Path $File).Path} -EA SilentlyContinue
-    $Variables.StatusText = "File loaded - $($file) - $((Get-PSCallStack).Command[1])"
+    # $Variables.StatusText = "File loaded - $($file) - $((Get-PSCallStack).Command[1])"
 }
     
 Function Global:IsLoaded ($File) {
@@ -159,7 +159,7 @@ namespace PInvoke.Win32 {
                 Start-Sleep 1
             }
         } ) | Out-Null
-    $Variables | Add-Member -Force @{IdleRunspaceHandle = $idlePowershell.BeginInvoke()}
+    $Variables.IdleRunspaceHandle = $idlePowershell.BeginInvoke()
 }
 
 Function Update-Monitoring {
@@ -172,11 +172,11 @@ Function Update-Monitoring {
     If ($Config.ReportToServer) {
         $Version = "$($Variables.CurrentProduct) $($Variables.CurrentVersion.ToString())"
         $Status = If ($Variables.Paused) { "Paused" } else { "Running" }
-        $RunningMiners = $Variables.ActiveMinerPrograms | Where-Object {$_.Status -eq "Running"}
+        $RunningMiners = $Variables.ActiveMinerPrograms.Where( {$_.Status -eq "Running"} )
         # Add the associated object from $Variables.Miners since we need data from that too
         $RunningMiners | Foreach-Object {
             $RunningMiner = $_
-            $Miner = $Variables.Miners | Where-Object {$_.Name -eq $RunningMiner.Name -and $_.Path -eq $RunningMiner.Path -and $_.Arguments -eq $RunningMiner.Arguments}
+            $Miner = $Variables.Miners.Where( {$_.Name -eq $RunningMiner.Name -and $_.Path -eq $RunningMiner.Path -and $_.Arguments -eq $RunningMiner.Arguments} )
             $_ | Add-Member -Force @{'Miner' = $Miner}
         }
 
@@ -238,8 +238,8 @@ Function Update-Monitoring {
                 }
             }
 
-            $Variables | Add-Member -Force @{Workers = $Workers}
-            $Variables | Add-Member -Force @{WorkersLastUpdated = (Get-Date)}
+            $Variables.Workers = $Workers
+            $Variables.WorkersLastUpdated = (Get-Date)
         }
         Catch {
             $Variables.StatusText = "Unable to retrieve worker data from $($Config.MonitoringServer)"
@@ -257,7 +257,7 @@ Function Start-Mining {
     $CycleRunspace.SessionStateProxy.Path.SetLocation((Split-Path $script:MyInvocation.MyCommand.Path))
     $Global:powershell = [powershell]::Create()
     $powershell.Runspace = $CycleRunspace
-    $powershell.AddScript( {
+    $scriptblock =  {
             #Start the log
                 Start-Transcript -Path ".\logs\CoreCyle-$((Get-Date).ToString('yyyyMMdd')).log" -Append -Force
             # Purge Logs more than 10 days
@@ -276,17 +276,17 @@ Function Start-Mining {
 
                     # Keep updating exchange rate
                     $Rates = Invoke-RestMethod "https://api.coinbase.com/v2/exchange-rates?currency=BTC" -TimeoutSec 15 -UseBasicParsing | Select-Object -ExpandProperty data | Select-Object -ExpandProperty rates
-                    $Config.Currency | Where-Object {$Rates.$_} | ForEach-Object {$Rates | Add-Member $_ ([Double]$Rates.$_) -Force}
-                    $Variables | Add-Member -Force @{Rates = $Rates}
+                    $Config.Currency.Where( {$Rates.$_} ) | ForEach-Object {$Rates | Add-Member $_ ([Double]$Rates.$_) -Force}
+                    $Variables.Rates = $Rates
 
                     # Update the UI every 30 seconds, and the Last 1/6/24hr and text window every 2 minutes
                     for ($i = 0; $i -lt 4; $i++) {
                         if ($i -eq 3) {
-                            $Variables | Add-Member -Force @{EndLoop = $True}
+                            $Variables.EndLoop = $True
                             Update-Monitoring
                         }
                         else {
-                            $Variables | Add-Member -Force @{EndLoop = $False}
+                            $Variables.EndLoop = $False
                         }
 
                         $Variables.StatusText = "Mining paused"
@@ -299,9 +299,12 @@ Function Start-Mining {
                     Sleep $Variables.TimeToSleep
                 }
             }
-        }) | Out-Null
-    $Variables | add-Member -Force @{CycleRunspaceHandle = $powershell.BeginInvoke()}
-    $Variables | Add-Member -Force @{LastDonated = (Get-Date).AddDays(-1).AddHours(1)}
+        }
+    $powershell.AddScript( {. $args[0]} ) | Out-Null
+    $powershell.AddArgument($scriptblock.Ast.GetScriptBlock())
+
+    $Variables.CycleRunspaceHandle = $powershell.BeginInvoke()
+    $Variables.LastDonated = (Get-Date).AddDays(-1).AddHours(1)
 }
 
 Function Stop-Mining {
@@ -391,7 +394,23 @@ Function Load-Config {
             }}
         }
     }
+    
+    If ($Config.Server_Password -in @("","3890292d-990c-44ba-b779-552829fc0bc4")) {
+        $Guid = (New-Guid).Guid
+        $Config.Server_Password = $Guid
+        If ($Config.Server_ClientPassword -in @("","3890292d-990c-44ba-b779-552829fc0bc4")) {
+            $Config.Server_ClientPassword = $Guid
+        }
+    }
 
+    if ($Variables) {
+        $ServerPasswd = ConvertTo-SecureString $Config.Server_Password -AsPlainText -Force
+        $ServerCreds = New-Object System.Management.Automation.PSCredential ($Config.Server_User, $ServerPasswd)
+        $Variables.ServerCreds = $ServerCreds
+        $ServerClientPasswd = ConvertTo-SecureString $Config.Server_ClientPassword -AsPlainText -Force
+        $ServerClientCreds = New-Object System.Management.Automation.PSCredential ($Config.Server_ClientUser, $ServerClientPasswd)
+        $Variables.ServerClientCreds = $ServerClientCreds
+    }
         $Config
     }
 }
@@ -405,6 +424,9 @@ Function Write-Config {
     )
     If ($Config.ManualConfig) {Update-Status("Manual config mode - Not saving config"); return}
     If ($Config -ne $null) {
+        If (@($Config.Algorithm).Where({$_.StartsWith("+")})) { $Config | Add-Member -Force @{AlgoInclude = @(@($Config.Algorithm).Where({$_.StartsWith("+")}).substring(1) | ForEach {Get-Algorithm $_})} } else {$Config | Add-Member -Force @{AlgoInclude = @()}}
+        If (@($Config.Algorithm).Where({$_.StartsWith("-")})) { $Config | Add-Member -Force @{AlgoExclude = @(@($Config.Algorithm).Where({$_.StartsWith("-")}).substring(1) | ForEach {Get-Algorithm $_})} } else {$Config | Add-Member -Force @{AlgoExclude = @()}}
+
         if (Test-Path $ConfigFile) {Copy-Item $ConfigFile "$($ConfigFile).backup"}
         $OrderedConfig = [PSCustomObject]@{}; ($config | select -Property * -ExcludeProperty PoolsConfig) | % {$_.psobject.properties | sort Name | % {$OrderedConfig | Add-Member -Force @{$_.Name = $_.Value}}}
         $OrderedConfig | ConvertTo-json | out-file $ConfigFile
@@ -574,13 +596,33 @@ function Get-ChildItemContent {
                     $PropertyKeys | ForEach-Object {
                         if ($Property.$_ -is [String]) {
                             $Property.$_ = Invoke-Expression "`"$($Property.$_)`""
-                        }
+                        }  
                     }
                 }
             }
         }
     $ChildItems
 }
+
+function Get-SubScriptContent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String]$Path,
+        [Parameter(Mandatory = $false)]
+        [Array]$Include = @()
+    )
+        [System.Collections.ArrayList]$Content = @()
+        $ChildItems = Get-ChildItem -Recurse -Path $Path -Include $Include | ForEach-Object {
+            $Name = $_.BaseName
+            $FileName = $_.Name
+            if ($_.Extension -eq ".ps1") {
+               &$_.FullName | ForEach-Object {$Content.Add([PSCustomObject]@{Name = $Name; Content = $_}) > $null }
+               # &$_.FullName | ForEach-Object {$Content += [PSCustomObject]@{Name = $Name; Content = $_} }
+            }
+        }
+    $Content
+}
+
 function Invoke_TcpRequest {
      
     param(
@@ -746,6 +788,13 @@ function Get-HashRate {
                 $Data = $Request | ConvertFrom-Json
                 $HashRate = [Double]($Data.devices.speed | Measure-Object -Sum).Sum
             }
+            "gminerdual" {
+                $Message = @{id = 1; method = "getstat" } | ConvertTo-Json -Compress
+                $Request = Invoke_httpRequest $Server $Port "/stat" 5
+                $Data = $Request | ConvertFrom-Json
+                $HashRate = [Double]($Data.devices.speed2 | Measure-Object -Sum).Sum
+                $HashRate_Dual = [Double]($Data.devices.speed | Measure-Object -Sum).Sum
+            }
             "claymore" {
 
                 $Request = Invoke_httpRequest $Server $Port "" 5
@@ -765,7 +814,7 @@ function Get-HashRate {
                     $HashRate = [int](($Data.result[2] -split ';')[0]) * 1000
                 }
             }
-	    
+        
             "TTminer" {
 
                 $Parameters = @{id = 1; jsonrpc = "2.0"; method = "miner_getstat1"} | ConvertTo-Json  -Compress
@@ -808,7 +857,7 @@ function Get-HashRate {
                 $Request = Invoke_TcpRequest $server $port $message 5
                 $Data = $Request | ConvertFrom-Json
                 $HashRate = [Double](($Data.result.speed_sps) | Measure-Object -Sum).Sum
-			}
+            }
 
             "wrapper" {
                 $HashRate = ""
@@ -858,11 +907,29 @@ function Get-HashRate {
                 }
             }
 
+            "NBMinerdualEaglesong" {
+                $Request = Invoke_httpRequest $Server $Port "/api/v1/status" 5
+                if ($Request) {
+                    $Data = $Request | ConvertFrom-Json
+                    $HashRate = [double]$Data.miner.total_hashrate_raw
+                    $HashRate_Dual = [double]$Data.miner.total_hashrate2_raw
+                }
+            }
+
+            "NBMinerdualHandshake" {
+                $Request = Invoke_httpRequest $Server $Port "/api/v1/status" 5
+                if ($Request) {
+                    $Data = $Request | ConvertFrom-Json
+                    $HashRate = [double]$Data.miner.total_hashrate2_raw
+                    $HashRate_Dual = [double]$Data.miner.total_hashrate_raw
+                }
+            }
+
             "LOL" {
                 $Request = Invoke_httpRequest $Server $Port "/summary" 5
                 if ($Request) {
                     $Data = $Request | ConvertFrom-Json
-					$HashRate = [Double]$data.Session.Performance_Summary
+                    $HashRate = [Double]$data.Session.Performance_Summary
                 }
             }
 
@@ -870,7 +937,7 @@ function Get-HashRate {
                 $Request = Invoke_TcpRequest $Server $Port "status" 5
                 if ($Request) {
                     $Data = $Request | ConvertFrom-Json
-					$HashRate = [Double]$Data.result.speed_ips * 1000000
+                    $HashRate = [Double]$Data.result.speed_ips * 1000000
                 }
             }
             
@@ -1079,38 +1146,38 @@ function Start-SubProcess {
 
         $CreateProcessExitCode = [Kernel32]::CreateProcess($lpApplicationName, $lpCommandLine, [ref] $lpProcessAttributes, [ref] $lpThreadAttributes, $bInheritHandles, $dwCreationFlags, $lpEnvironment, $lpCurrentDirectory, [ref] $lpStartupInfo, [ref] $lpProcessInformation)
         $x = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-		# Write-Host "CreateProcessExitCode: $CreateProcessExitCode"
+        # Write-Host "CreateProcessExitCode: $CreateProcessExitCode"
         # Write-Host "Last error $x"
-		Write-Host $lpCommandLine
-		# Write-Host "lpProcessInformation.dwProcessID: $($lpProcessInformation.dwProcessID)"
-		
-		If ($CreateProcessExitCode) {
-			# Write-Host "lpProcessInformation.dwProcessID - WHEN TRUE: $($lpProcessInformation.dwProcessID)"
+        Write-Host $lpCommandLine
+        # Write-Host "lpProcessInformation.dwProcessID: $($lpProcessInformation.dwProcessID)"
+        
+        If ($CreateProcessExitCode) {
+            # Write-Host "lpProcessInformation.dwProcessID - WHEN TRUE: $($lpProcessInformation.dwProcessID)"
 
-			$Process = Get-Process -Id $lpProcessInformation.dwProcessID
+            $Process = Get-Process -Id $lpProcessInformation.dwProcessID
 
-			# Dirty workaround
-			# Need to investigate. lpProcessInformation sometimes comes null even if process started
-			# So getting process with the same FilePath if so
-			$Tries = 0
-			While ($Process -eq $null -and $Tries -le 5) {
-				Write-Host "Can't get process - $Tries"
-				$Tries++
-				Sleep 1
-				$Process = (Get-Process | ? {$_.Path -eq $FilePath})[0]
-				Write-Host "Process= $($Process.Handle)"
-			}
+            # Dirty workaround
+            # Need to investigate. lpProcessInformation sometimes comes null even if process started
+            # So getting process with the same FilePath if so
+            $Tries = 0
+            While ($Process -eq $null -and $Tries -le 5) {
+                Write-Host "Can't get process - $Tries"
+                $Tries++
+                Sleep 1
+                $Process = (Get-Process | ? {$_.Path -eq $FilePath})[0]
+                Write-Host "Process= $($Process.Handle)"
+            }
 
-			if ($Process -eq $null) {
-				Write-Host "Case 2 - Failed Get-Process"
-				[PSCustomObject]@{ProcessId = $null}
-				return
-			}
-		} else {
-			Write-Host "Case 1 - Failed CreateProcess"
-			[PSCustomObject]@{ProcessId = $null}
-			return
-		}
+            if ($Process -eq $null) {
+                Write-Host "Case 2 - Failed Get-Process"
+                [PSCustomObject]@{ProcessId = $null}
+                return
+            }
+        } else {
+            Write-Host "Case 1 - Failed CreateProcess"
+            [PSCustomObject]@{ProcessId = $null}
+            return
+        }
 
         [PSCustomObject]@{ProcessId = $Process.Id; ProcessHandle = $Process.Handle}
 
@@ -1124,7 +1191,7 @@ function Start-SubProcess {
     do {Start-Sleep 1; $JobOutput = Receive-Job $Job}
     while ($JobOutput -eq $null)
 
-    $Process = Get-Process | Where-Object Id -EQ $JobOutput.ProcessId
+    $Process = (Get-Process).Where( { $_.Id -EQ $JobOutput.ProcessId } )
     $Process.Handle | Out-Null
     $Process
 }
@@ -1137,6 +1204,7 @@ function Expand-WebRequest {
         [Parameter(Mandatory = $true)]
         [String]$Path
     )
+    [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
 
     $FolderName_Old = ([IO.FileInfo](Split-Path $Uri -Leaf)).BaseName
     $FolderName_New = Split-Path $Path -Leaf
@@ -1145,8 +1213,7 @@ function Expand-WebRequest {
     if (Test-Path $FileName) {Remove-Item $FileName}
     if (Test-Path "$(Split-Path $Path)\$FolderName_New") {Remove-Item "$(Split-Path $Path)\$FolderName_New" -Recurse -Force}
     if (Test-Path "$(Split-Path $Path)\$FolderName_Old") {Remove-Item "$(Split-Path $Path)\$FolderName_Old" -Recurse -Force}
-
-    Invoke-WebRequest $Uri -OutFile $FileName -TimeoutSec 15 -UseBasicParsing
+    Invoke-WebRequest -Uri $Uri -OutFile $FileName -TimeoutSec 15 -UseBasicParsing
     Start-Process ".\Utils\7z" "x $FileName -o$(Split-Path $Path)\$FolderName_Old -y -spe" -Wait
     if (Get-ChildItem "$(Split-Path $Path)\$FolderName_Old" | Where-Object PSIsContainer -EQ $false) {
         Rename-Item "$(Split-Path $Path)\$FolderName_Old" "$FolderName_New"
@@ -1163,12 +1230,17 @@ function Get-Algorithm {
         [Parameter(Mandatory = $true)]
         [String]$Algorithm
     )
+
+    If ((-not $Variables.Algorithms) -or (Get-Date).AddMinutes(-2) -ge $Variables.Algorithms.UpdatedCache ){
+        $Variables | Add-Member @{ Algorithms = Get-Content ".\Includes\Algorithms.txt" | ConvertFrom-Json } -Force
+        $Variables.Algorithms  | Add-Member @{ UpdatedCache = get-date } -Force
+    }
     
-    $Algorithms = Get-Content ".\Includes\Algorithms.txt" | ConvertFrom-Json
+    # $Algorithms = Get-Content ".\Includes\Algorithms.txt" | ConvertFrom-Json
 
     $Algorithm = (Get-Culture).TextInfo.ToTitleCase(($Algorithm -replace "-", " " -replace "_", " ")) -replace " "
 
-    if ($Algorithms.$Algorithm) {$Algorithms.$Algorithm}
+    if ($Variables.Algorithms.$Algorithm) {$Variables.Algorithms.$Algorithm}
     else {$Algorithm}
 }
 
@@ -1280,7 +1352,7 @@ Function Autoupdate {
             ls .\OptionalMiners\ | ? {$_.name -notin (ls .\$UpdateFileName\OptionalMiners\).name} | % {Remove-Item -Recurse -Force $_.FullName}
 
             # Update Optional Miners to Miners if in use
-            ls .\OptionalMiners\ | ? {$_.name -in (ls .\Miners\).name} | % {Copy-Item -Force $_.FullName .\Miners\}
+            # ls .\OptionalMiners\ | ? {$_.name -in (ls .\Miners\).name} | % {Copy-Item -Force $_.FullName .\Miners\}
 
             # Remove any obsolete miner file (ie. Not in new version Miners or OptionalMiners)
             ls .\Miners\ | ? {$_.name -notin (ls .\$UpdateFileName\Miners\).name -and $_.name -notin (ls .\$UpdateFileName\OptionalMiners\).name} | % {Remove-Item -Recurse -Force $_.FullName}
@@ -1410,11 +1482,11 @@ Function Merge-Command {
         Switch ($type) {
             "Password" {
                 If ($Slave -and !($Slave.StartsWith(","))) {$Slave = ",$($Slave)"}
-                ($Master.split(",") | ? {$_ -ne ""} | foreach {",$($_)"}) | foreach {
+                ($Master.split(",").Where({$_ -ne ""}) | foreach {",$($_)"}) | foreach {
                     $MasterPassArg = $_
-                    ($_.split("=") | ? {$_.startsWith(",")} | foreach {"$($_)="}) | Foreach {
+                    ($_.split("=").Where({$_.startsWith(",")}) | foreach {"$($_)="}) | Foreach {
                         If ($_ -notin $NoReplacePassArgs) {
-                            If ($Slave -match "$_ *([^,]+)" | Out-Null) {
+                            If ($Slave -match "$_ *([^,]+)") {
                                 $Slave = $Slave -replace "$_ *([^,]+)",$MasterPassArg
                             } else {
                                 $Slave = $Slave + $MasterPassArg
@@ -1425,22 +1497,31 @@ Function Merge-Command {
                 $Slave.Substring(1)
             }
             "Command" {
-                If ($Master -and !$Master.StartsWith(" ")) {$Master = " $($Master)"}
-                If ($Slave -and !$Slave.StartsWith(" ")) {$Slave = " $($Slave)"}
-                If ($Master -and !$Master.EndsWith(" ")) {$Master = "$($Master) "}
-                If ($Slave -and !$Slave.EndsWith(" ")) {$Slave = "$($Slave) "}
-                ($Master.split(" ") | ? {$_.StartsWith("-")}) | Foreach {
+                ($Master.split(" ").Where({$_.StartsWith("-")})) | Foreach {
+                    If ($Master -and !$Master.StartsWith(" ")) {$Master = " $($Master)"}
+                    If ($Slave -and !$Slave.StartsWith(" ")) {$Slave = " $($Slave)"}
+                    If ($Master -and !$Master.EndsWith(" ")) {$Master = "$($Master) "}
+                    If ($Slave -and !$Slave.EndsWith(" ")) {$Slave = "$($Slave) "}
+                    $Matches = $null
+                    $MasterCmdArg = $null
                     If ($_ -notin $NoReplaceCmdArgs) {
                         if ($Master -match " $_ -") {
                             If (!($Slave -match " $_ -")) {
                                 $Slave = $Slave + " $($_)"
                             }
-                        } elseif ($Master -match " $_ *([^-]+)") {
+                        # } elseif ($Master -match " $_ *([^-]+)") {
+                            # $MasterCmdArg = $Matches[0]
+                            # If ($Slave -match " $_ *([^-]+)") {
+                                # $Slave = $Slave -replace " $_ *([^-]+)",$MasterCmdArg
+                            # } else {
+                                # $Slave = $Slave + " $($MasterCmdArg)"    
+                            # }
+                        } elseif ($Master -match " $_ *([^( -)])+") {
                             $MasterCmdArg = $Matches[0]
-                            If ($Slave -match " $_ *([^-]+)") {
-                                $Slave = $Slave -replace " $_ *([^-]+)",$MasterCmdArg
+                            If ($Slave -match " $_ *([^( -)])+") {
+                                $Slave = $Slave -replace " $_ *([^( -)])+",$MasterCmdArg
                             } else {
-                                $Slave = $Slave + " $($MasterCmdArg)"    
+                                $Slave = $Slave + " $($MasterCmdArg)"  
                             }
                         } elseif ($Master -match " $_ *([^\s]+)") {
                             $MasterCmdArg = $Matches[0]
@@ -1449,10 +1530,10 @@ Function Merge-Command {
                             } else {
                                 $Slave = $Slave + " $($MasterCmdArg)"    
                             }
-                        } elseif ($Master -match " $_*([^\s]+)") {
+                        } elseif ($Master -match " $_ ") {
                             $MasterCmdArg = $Matches[0]
-                            If ($Slave -match " $_*([^\s]+)") {
-                                $Slave = $Slave -replace " $_*([^\s]+)",$MasterCmdArg
+                            If ($Slave -match " $_ ") {
+                                $Slave = $Slave -replace " $_ ",$MasterCmdArg
                             } else {
                                 $Slave = $Slave + " $($MasterCmdArg)"    
                             }
@@ -1468,4 +1549,166 @@ Function Merge-Command {
     }
 }
 
+Function Invoke-ProxiedWebRequest {
+    $Request = $null
+    If ($Config.Server_Client -and $Variables.ServerRunning -and -not $ByPassServer -and -not $OutFile) {
+        Try {
+            $ProxyURi = "http://$($Config.Server_ClientIP):$($Config.Server_ClientPort)/Proxy/?url=$($Args[0])"
+            $Args[0] = $ProxyURi
+            # $Request = Invoke-WebRequest $ProxyURi -Credential $Variables.ServerClientCreds -TimeoutSec $TimeoutSec -UseBasicParsing -Headers $Headers
+            $Request = Invoke-WebRequest @Args -Credential $Variables.ServerClientCreds
+        } Catch {
+            # $Variables.StatusText = "Proxy Request Failed - Trying Direct: $($URi)"
+        }
+    }
+    if (!$Request.Content -or ($Request.StatusCode -ne 200 -and $Request.StatusCode -ne 305) -and -not $OutFile) {
+        Try {
+            $Request = Invoke-WebRequest @Args
+        } Catch {
+            # $Variables.StatusText = "Direct Request Failed: $($URi)"
+        }
+    }
+    
+    $Request
+    
+}
 
+Function Get-CoinIcon {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String]$Symbol,
+        [Parameter(Mandatory = $false)]
+        [Int]$Size=32
+    )
+    $Symbol = $Symbol.Trim()
+    If ($Symbol -like "auto *" -or $Symbol -in @("")) {Return}
+    # If (!$Variables.CoinIcons) {
+        # $Variables | Add-Member -Force @{CoinIcons = (Invoke-WebRequest "https://api.coingecko.com/api/v3/coins/list" | ConvertFrom-Json) | sort Symbol -Unique | Select Symbol,Id,Name,Image}
+        # }
+    # If (($Variables.CoinIcons | ? {$_.Symbol -eq $Symbol}) -and (($Variables.CoinIcons | ? {$_.Symbol -eq $Symbol}).image -eq $Null)) {
+            # ($Variables.CoinIcons | ? {$_.Symbol -eq $Symbol}).image = (Invoke-WebRequest "https://api.coingecko.com/api/v3/coins/$(($Variables.CoinIcons | ? {$_.Symbol -eq $Symbol}).id)" | ConvertFrom-Json).Image
+    # }
+    # ($Variables.CoinIcons | ? {$_.Symbol -eq $Symbol}).image.thumb
+    If (!$Variables.CoinIcons) {
+        $Variables.CoinIcons = [PSCustomObject]@{}
+        (Invoke-WebRequest "https://api.coingecko.com/api/v3/coins/list" | ConvertFrom-Json) | sort Symbol -Unique | ? {$_.Symbol -in $Variables.Miners.Coin} | ForEach {$Variables.CoinIcons | Add-Member -Force @{$_.Symbol = [PSCustomObject]@{id = $_.id}}}
+        }
+    If (!($Variables.CoinIcons.$Symbol.id)) {
+        (Invoke-WebRequest "https://api.coingecko.com/api/v3/coins/list" | ConvertFrom-Json) | sort Symbol -Unique | ? {$_.Symbol -eq $Symbol} | ForEach {$Variables.CoinIcons | Add-Member -Force @{$_.Symbol = [PSCustomObject]@{id = $_.id}}}
+    }   
+    If (($Variables.CoinIcons.$Symbol.id) -and !($Variables.CoinIcons.$Symbol.Image)) {
+            $Variables.CoinIcons.$Symbol | Add-Member -Force @{Image =  (Invoke-WebRequest "https://api.coingecko.com/api/v3/coins/$($Variables.CoinIcons.$Symbol.id)" | ConvertFrom-Json).Image.Thumb}
+            $Variables.CoinIcons | Convertto-Json | out-file ".\Logs\CoinIcons.json"
+    }
+    $Variables.CoinIcons.$Symbol.Image
+}
+
+Function Load-CoinsIconsCache {
+
+    If (Test-Path ".\Logs\CoinIcons.json") {
+        $Variables.CoinsIconCachePopulating = $True
+        $Variables.CoinIcons = (Get-Content ".\Logs\CoinIcons.json" | ConvertFrom-Json)
+        $Variables.CoinsIconCacheLoaded = $True
+        $Variables.CoinsIconCachePopulating = $False
+    } Else {
+    
+        # Setup runspace to load Coins icons cache in background
+        $IconCacheRunspace = [runspacefactory]::CreateRunspace()
+        $IconCacheRunspace.Open()
+        $IconCacheRunspace.SessionStateProxy.SetVariable("Config", $Config)
+        $IconCacheRunspace.SessionStateProxy.SetVariable("Variables", $Variables)
+        $IconCacheRunspace.SessionStateProxy.Path.SetLocation($pwd) | Out-Null
+        $IconCacheLoader = [PowerShell]::Create().AddScript({
+            . .\Includes\include.ps1
+            $Variables.CoinsIconCachePopulating = $True
+
+            If (!$Variables.CoinsIconCacheLoaded) {
+                If (!$Variables.CoinIcons) {
+                    # $Variables | Add-Member -Force @{CoinIcons = [PSCustomObject]@{}}
+                    $CoinIcons = [PSCustomObject]@{}
+                    (Invoke-ProxiedWebRequest "https://api.coingecko.com/api/v3/coins/list" | ConvertFrom-Json) | sort Symbol -Unique | ? {$_.Symbol -in $Variables.Miners.Coin} | ForEach {$CoinIcons | Add-Member -Force @{$_.Symbol = [PSCustomObject]@{id = $_.id}}}
+                }
+                $CoinIcons.PSobject.Properties.Name | sort | foreach {
+                    $CoinIcons.$_ | Add-Member -Force @{Image =  (Invoke-ProxiedWebRequest "https://api.coingecko.com/api/v3/coins/$($CoinIcons.$_.id)" | ConvertFrom-Json).Image.Thumb}
+                }
+            }
+            $Variables.CoinIcons = CoinIcons
+            $Variables.CoinIcons | Convertto-Json | out-file ".\Logs\CoinIcons.json"
+            $Variables.CoinsIconCacheLoaded = $True
+            $Variables.CoinsIconCachePopulating = $False
+            $Variables.IconCacheRunspaceHandle.Runspace.Close()
+            $Variables.IconCacheRunspaceHandle.Dispose()
+
+        })
+
+        $IconCacheLoader.Runspace = $IconCacheRunspace
+        $Variables.IconCacheRunspaceHandle = $IconCacheLoader.BeginInvoke()
+    }
+}
+
+Function Get-PoolIcon {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String]$Pool,
+        [Parameter(Mandatory = $false)]
+        [Int]$Size=32
+    )
+
+    If (!$Variables.poolapiref -and (Test-Path ".\Config\poolapiref.json")){
+        $Variables.poolapiref = Get-Content ".\Config\poolapiref.json" | ConvertFrom-Json
+    }
+    ($Variables.poolapiref | ? {$_.Name -eq $Pool}).IconURi
+
+}
+
+Function Get-DisplayCurrency {
+    param(
+        [Parameter(Mandatory = $false)]
+        [Decimal]$Value,
+        [Parameter(Mandatory = $false)]
+        [Decimal]$Factor=1
+    )
+    
+    $Result = [PSCustomObject]@{
+        Currency = If($Config.Passwordcurrency -eq "BTC") {"$([char]0x20BF)"} Else {$Config.Passwordcurrency}
+        Value = $Value * $Factor
+        RoundedValue = [Math]::Round($This.Value, 3)
+        Unit = ""
+        UnitString = "$($This.Unit)$($This.Currency)"
+        UnitStringPerDay = "$($This.Unit)$($This.Currency)/Day"
+        DisplayString = "$($This.RoundedValue) $($This.Unit)$($This.Currency)"
+        DisplayStringPerDay = "$($This.RoundedValue) $($This.Unit)$($This.Currency)/Day"
+    }
+    $Result | Add-Member -Force -MemberType ScriptProperty -Name 'RoundedValue' -Value{ [Math]::Round($This.Value, 3) }
+    $Result | Add-Member -Force -MemberType ScriptProperty -Name 'UnitString' -Value{ "$($This.Unit)$($This.Currency)" }
+    $Result | Add-Member -Force -MemberType ScriptProperty -Name 'UnitStringPerDay' -Value{ "$($This.Unit)$($This.Currency)/Day" }
+    $Result | Add-Member -Force -MemberType ScriptProperty -Name 'DisplayString' -Value{ "$($This.RoundedValue) $($This.Unit)$($This.Currency)" }
+    $Result | Add-Member -Force -MemberType ScriptProperty -Name 'DisplayStringPerDay' -Value{ "$($This.RoundedValue) $($This.Unit)$($This.Currency)/Day" }
+    
+    $Result.Unit = Switch ([Math]::Floor($Result.Value)) {
+        {$_ -le 0}                    {"m";$Result.Value*=1000;Break}
+        {$_ -le 999}                  {"";Break}
+        {$_ -le 999999}               {"K";$Result.Value/=1000;Break}
+        {$_ -le 999999999}            {"M";$Result.Value/=1000000;Break}
+        {$_ -le 999999999999}         {"G";$Result.Value/=1000000000;Break}
+    }
+    # $Result.Value = [Math]::Round($Result.Value, 3)
+    $Result
+
+}
+
+Function ConvertTo-ImagePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [String]$Text
+    )
+    
+    $ImagePath = Switch ($Text) {
+        "CPU"               {"https://img.icons8.com/metro/26/000000/electronics.png"}
+        "NVIDIA"            {"https://www.nvidia.com/favicon.ico"}
+        "AMD"               {"https://www.amd.com/themes/custom/amd/favicon.ico"}
+        "Top"               {"https://img.icons8.com/metro/32/000000/double-up.png"}
+        "Paused"            {"https://img.icons8.com/flat_round/64/000000/pause--v1.png"}
+    }
+    $ImagePath
+}

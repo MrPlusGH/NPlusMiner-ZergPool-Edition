@@ -40,12 +40,27 @@ If ($WorkingDirectory) {Set-Location $WorkingDirectory}
 # Start-Transcript ".\Logs\EarnTR.txt"
 If (Test-Path ".\logs\EarningTrackerData.json") {$AllBalanceObjectS = Get-Content ".\logs\EarningTrackerData.json" | ConvertFrom-JSON} else {$AllBalanceObjectS = @()}
 
+. .\Includes\include.ps1
+$Config = Load-Config ".\Config\Config.json"
+    If ($Config.Server_Client) {
+        $ServerClientPasswd = ConvertTo-SecureString $Config.Server_ClientPassword -AsPlainText -Force
+        $ServerClientCreds = New-Object System.Management.Automation.PSCredential ($Config.Server_ClientUser, $ServerClientPasswd)
+        $Variables = [hashtable]::Synchronized(@{})
+        $Variables | Add-Member -Force @{ServerClientCreds = $ServerClientCreds}
+    }
 $BalanceObjectS = @()
 $TrustLevel = 0
 $StartTime = Get-Date
 $LastAPIUpdateTime = Get-Date
 
 while ($true) {
+    If ($Config.Server_Client) {
+        $Variables | Add-Member -Force @{ServerRunning = Try{ ((Invoke-WebRequest "http://$($Config.Server_ClientIP):$($Config.Server_ClientPort)/ping" -Credential $Variables.ServerClientCreds -TimeoutSec 3).content -eq "Server Alive")} Catch {$False} }
+    }
+
+# Set decimal separator so CSV files look good.
+    [System.Threading.Thread]::CurrentThread.CurrentUICulture.NumberFormat.NumberDecimalSeparator = "."
+    [System.Threading.Thread]::CurrentThread.CurrentCulture.NumberFormat.NumberDecimalSeparator = "."
 
 #Read Config (ie. Pools to track)
     $EarningsTrackerConfig = Get-content ".\config\EarningTrackerConfig.json" | ConvertFrom-JSON
@@ -55,13 +70,13 @@ while ($true) {
     $TrackPools = (($EarningsTrackerConfig.pools | sort -Unique).replace("plus","")).replace("24hr","")
 
 # Get pools api ref
-	If (-not $poolapi -or ($LastAPIUpdateTime -le (Get-Date).AddDays(-1))){
-		try {
-			$poolapi = Invoke-WebRequest "http://tiny.cc/l355qy" -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json} catch {$poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json}
-			$LastAPIUpdateTime = Get-Date
-		} else {
-			$poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json
-		}
+    If (-not $poolapi -or ($LastAPIUpdateTime -le (Get-Date).AddDays(-1))){
+        try {
+            $poolapi = Invoke-ProxiedWebRequest "http://tiny.cc/l355qy" | ConvertFrom-Json} catch {$poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json}
+            $LastAPIUpdateTime = Get-Date
+        } else {
+            $poolapi = Get-content ".\Config\poolapiref.json" | Convertfrom-json
+        }
 
 #For each pool in config
 #Go loop
@@ -78,43 +93,49 @@ while ($true) {
                 $PoolConf = $PoolsConfig.$ConfName
 
                 $Wallet =
-                    if($Pool -eq "miningpoolhub"){
+                    if($Pool -in @("miningpoolhub","prohashing")){
                         $PoolConf.APIKey
                     } else  {
                         $PoolConf.Wallet
                     }
                 
                 $CurDate = Get-Date
-				# Write-host $Pool
-				# Write-Host "$($APIUri)$($Wallet)"
+                # Write-host $Pool
+                # Write-Host "$($APIUri)$($Wallet)"
                 If ($Pool -eq "nicehash-V1"){
                     try {
-                    $TempBalanceData = Invoke-WebRequest ("$($APIUri)$($Wallet)") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json } catch {  }
+                    $TempBalanceData = Invoke-ProxiedWebRequest ("$($APIUri)$($Wallet)") -UseBasicParsing | ConvertFrom-Json } catch {  }
                     if (-not $TempBalanceData.$BalanceJson) {$TempBalanceData | Add-Member -NotePropertyName $BalanceJson -NotePropertyValue ($TempBalanceData.result.Stats | measure -sum $BalanceJson).sum -Force}
                     if (-not $TempBalanceData.$TotalJson) {$TempBalanceData | Add-Member -NotePropertyName $TotalJson -NotePropertyValue ($TempBalanceData.result.Stats | measure -sum $BalanceJson).sum -Force}
                 } elseif ($Pool -eq "nicehash") {
                     try {
-                    $TempBalanceData = Invoke-WebRequest ("$($APIUri)$($Wallet)/rigs") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json } catch {  }
+                    $TempBalanceData = Invoke-ProxiedWebRequest ("$($APIUri)$($Wallet)/rigs2") -UseBasicParsing | ConvertFrom-Json } catch {  }
                     [Double]$NHTotalBalance = [Double]($TempBalanceData.unpaidAmount) + [Double]($TempBalanceData.externalBalance)
                     $TempBalanceData | Add-Member -NotePropertyName $BalanceJson -NotePropertyValue $NHTotalBalance -Force
                     $TempBalanceData | Add-Member -NotePropertyName $TotalJson -NotePropertyValue $NHTotalBalance -Force
+                    $TempBalanceData | Add-Member -NotePropertyName "currency" -NotePropertyValue "BTC" -Force
                 } elseif ($Pool -eq "miningpoolhub") {
                     try {
-                    $TempBalanceData = ((((Invoke-WebRequest ("$($APIUri)$($Wallet)") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"}).content | ConvertFrom-Json).getuserallbalances).data | Where {$_.coin -eq "bitcoin"}) } catch {  }#.confirmed
+                    $TempBalanceData = ((((Invoke-ProxiedWebRequest ("$($APIUri)$($Wallet)") -UseBasicParsing).content | ConvertFrom-Json).getuserallbalances).data | Where {$_.coin -eq "bitcoin"}) } catch {  }#.confirmed
+                    $TempBalanceData | Add-Member -NotePropertyName "currency" -NotePropertyValue "BTC" -Force
+                } elseif ($Pool -eq "prohashing") {
+                    try {
+                    $TempBalanceData = (((Invoke-ProxiedWebRequest ("$($APIUri)$($Wallet)") -UseBasicParsing).content | ConvertFrom-Json).data.balances.($Config.Passwordcurrency)) } catch {  }#.confirmed
+                    $TempBalanceData | Add-Member -NotePropertyName "currency" -NotePropertyValue $Config.Passwordcurrency -Force
                 } else {
                     try {
-                    $TempBalanceData = Invoke-WebRequest ("$($APIUri)$($Wallet)") -TimeoutSec 15 -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} | ConvertFrom-Json } catch {  }
+                    $TempBalanceData = Invoke-ProxiedWebRequest ("$($APIUri)$($Wallet)") -UseBasicParsing | ConvertFrom-Json } catch {  }
                 }
                 If ($TempBalanceData.$TotalJson -gt 0){
                     $BalanceData = $TempBalanceData
                     $AllBalanceObjectS += [PSCustomObject]@{
                             Pool            = $Pool
                             Date            = $CurDate
-                            balance         = $BalanceData.$BalanceJson
-                            unsold          = $BalanceData.unsold
-                            total_unpaid    = $BalanceData.total_unpaid
-                            total_paid      = $BalanceData.total_paid
-                            total_earned    = $BalanceData.$TotalJson
+                            balance         = [Math]::Round($BalanceData.$BalanceJson, 8)
+                            unsold          = [Math]::Round($BalanceData.unsold, 8)
+                            total_unpaid    = [Math]::Round($BalanceData.total_unpaid, 8)
+                            total_paid      = [Math]::Round($BalanceData.total_paid, 8)
+                            total_earned    = [Math]::Round($BalanceData.$TotalJson, 8)
                             currency        = $BalanceData.currency
                         }
                     $BalanceObjectS = $AllBalanceObjectS | ? {$_.Pool -eq $Pool}
@@ -160,12 +181,12 @@ while ($true) {
                         AvgHourlyGrowth             = $AvgBTCHour
                         BTCD                        = $AvgBTCHour*24
                         EstimatedEndDayGrowth       = If ((($CurDate - ($BalanceObjectS[0].Date)).TotalHours) -ge 1) {($AvgBTCHour * ((Get-Date -Hour 0 -Minute 00 -Second 00).AddDays(1).AddSeconds(-1) - $CurDate).Hours)} else {$Growth1 * ((Get-Date -Hour 0 -Minute 00 -Second 00).AddDays(1).AddSeconds(-1) - $CurDate).Hours}
-                        EstimatedPayDate            = if ($PaymentThreshold){IF ($BalanceObject.balance -lt $PaymentThreshold) {If ($AvgBTCHour -gt 0) {$CurDate.AddHours(($PaymentThreshold - $BalanceObject.balance) / $AvgBTCHour)} Else {"Unknown"}} else {"Next Payout !"}}else{"Unknown"}
+                        EstimatedPayDate            = if ($PaymentThreshold){IF ($BalanceObject.balance -lt $PaymentThreshold) {If ($AvgBTCHour -gt 0.0000000000000001) {$CurDate.AddHours(($PaymentThreshold - $BalanceObject.balance) / ($AvgBTCHour))} Else {"Unknown"}} else {"Next Payout !"}}else{"Unknown"}
                         TrustLevel                  = if(($CurDate - ($BalanceObjectS[0].Date)).TotalMinutes -le 360){($CurDate - ($BalanceObjectS[0].Date)).TotalMinutes/360}else{1}
                         PaymentThreshold            = $PaymentThreshold
                         TotalHours                  = ($CurDate - ($BalanceObjectS[0].Date)).TotalHours
                     }
-                    
+
                     $EarningsObject
                     if ($EarningsTrackerConfig.EnableLog){$EarningsObject | Export-Csv -NoTypeInformation -Append ".\Logs\EarningTrackerLog.csv"}
 
@@ -268,5 +289,4 @@ while ($true) {
         }else{
             Sleep (60*($Interval))  
         }
-        
 }

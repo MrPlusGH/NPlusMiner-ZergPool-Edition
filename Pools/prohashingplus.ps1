@@ -2,8 +2,8 @@ if (!(IsLoaded(".\Includes\include.ps1"))) {. .\Includes\include.ps1;RegisterLoa
 
 Try {
     $dtAlgos = New-Object System.Data.DataTable
-    if (Test-Path ((split-path -parent (get-item $script:MyInvocation.MyCommand.Path).Directory) + "\BrainPlus\zergpoolplus\zergpoolplus.xml")) {
-        $dtAlgos.ReadXml((split-path -parent (get-item $script:MyInvocation.MyCommand.Path).Directory) + "\BrainPlus\zergpoolplus\zergpoolplus.xml") | out-null
+    if (Test-Path ((split-path -parent (get-item $script:MyInvocation.MyCommand.Path).Directory) + "\BrainPlus\prohashingPlus\prohashingPlus.xml")) {
+        $dtAlgos.ReadXml((split-path -parent (get-item $script:MyInvocation.MyCommand.Path).Directory) + "\BrainPlus\prohashingPlus\prohashingPlus.xml") | out-null
     }
 }
 catch { return }
@@ -11,11 +11,18 @@ catch { return }
 if (-not $dtAlgos) {return}
 
 $Name = (Get-Item $script:MyInvocation.MyCommand.Path).BaseName
-$HostSuffix = ".mine.zergpool.com"
+$HostSuffix = "prohashing.com"
 $PriceField = "Plus_Price"
 # $PriceField = "actual_last24h"
 # $PriceField = "estimate_current"
-$DivisorMultiplier = 1000000
+$DivisorMultiplier = 1
+
+# + 2.9% supplementary fee for conversion
+# Makes 2 + 2.9 = 4.9%
+# There is 0.00015 BTC fee on withdraw as well (Estimation 0.00015/0.0025 = 6%) Using 0.0025 as most pools do use this Payout threshold
+# Makes 2 + 2.9 + 6 = 10.9% !!!
+# $Request.$_.fees = $Request.$_.fees + 2.9 + 6
+# Taking 1.5 here considerinf withdraw at 0.01BTC
  
 $Location = "US"
 
@@ -24,13 +31,13 @@ $Location = "US"
     $PoolConf = $Config.PoolsConfig.$ConfName
 
 $dtAlgos | foreach {
-    $PoolHost = "$($_.algo)$($HostSuffix)"
+    $PoolHost = "$($HostSuffix)"
     $PoolPort = $_.port
     $PoolAlgorithm = Get-Algorithm $_.algo
     
     $Divisor = $DivisorMultiplier * [Double]$_.mbtc_mh_factor
 
-    $Stat = Set-Stat -Name "$($Name)_$($PoolAlgorithm)_Profit" -Value ([Double]$_.$PriceField / $Divisor * (1 - ($_.fees / 100)))
+    $Stat = Set-Stat -Name "$($Name)_$($PoolAlgorithm)_Profit" -Value ([Double]$_.$PriceField / $Divisor * (1 - (($_.fees))))
 
     $PwdCurr = if ($PoolConf.PwdCurrency) {$PoolConf.PwdCurrency}else {$Config.Passwordcurrency}
     $WorkerName = If ($PoolConf.WorkerName -like "ID=*") {$PoolConf.WorkerName} else {"ID=$($PoolConf.WorkerName)"}
@@ -48,11 +55,11 @@ $dtAlgos | foreach {
             Protocol      = "stratum+tcp"
             Host          = $PoolHost
             Port          = $PoolPort
-            User          = $PoolConf.Wallet
-            Pass          = $PoolPassword
+            User          = "$($PoolConf.UserName)"
+            Pass          = "a=$($PoolAlgorithm),n=$($PoolConf.WorkerName.replace('ID=',''))"
             Location      = $Location
             SSL           = $false
-            Coin          = $_.symbol
+            Coin          = "Auto ($($_.symbol))"
             SoloBlocksPenalty          = $_.SoloBlocksPenalty
         }
     }

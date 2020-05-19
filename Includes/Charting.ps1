@@ -30,7 +30,9 @@ param(
     [Parameter(Mandatory=$true)]
     [String]$Width = 700, 
     [Parameter(Mandatory = $true)]
-    [String]$Height = 85 
+    [String]$Height = 85, 
+    [Parameter(Mandatory = $false)]
+    [String]$Currency = "BTC" 
 )
 
 Function GetNextColor {
@@ -115,8 +117,11 @@ Switch ($Chart) {
         # $BaseColor = "424B54"
         $BaseColor = "FFFFFF"
         # $BaseColor = "F7931A"
-        $Color = $BaseColor
-        $A=255
+        $StartColor = "FFFFFF"
+        $EndColor = "f2a900"
+        $i=0
+        # $Colors = Get-ColorPalette $StartColor $EndColor (($datasource | sort DaySum -Unique).DaySum | % {[math]::Round($_*1000, 3)} | sort -Unique).count
+        $Colors = Get-ColorPalette $StartColor $EndColor 100
 
            [void]$chart1.Series.Add("Total")
            $chart1.Series["Total"].ChartType = "Column"
@@ -129,11 +134,17 @@ Switch ($Chart) {
            # $chart1.Series[$Pool].color = [System.Drawing.Color]::FromArgb($A,247,147,26)
            $chart1.Series["Total"].label = "#VALY{N3}"
            $chart1.Series["Total"].LabelForeColor = "#FFFFFF"
-           $chart1.Series["Total"].ToolTip = "#VALX: #VALY mBTC" # - Total: #TOTAL mBTC";
+           $chart1.Series["Total"].ToolTip = "#VALX: #VALY" # - Total: #TOTAL mBTC";
            # $datasource | select Date,DaySum -Unique | ForEach-Object {$chart1.Series["Total"].Points.addxy( $_.Date , ("{0:N3}" -f ([Decimal]$_.DaySUm*1000))) | Out-Null }
-           $datasource | select Date,DaySum -Unique | ForEach-Object {$chart1.Series["Total"].Points.addxy( $_.Date , (([Decimal]$_.DaySUm*1000))) | Out-Null }
+           $datasource | select Date,DaySum -Unique | ForEach-Object {$chart1.Series["Total"].Points.addxy( $_.Date , (([Decimal](Get-DisplayCurrency $_.DaySum).Value))) | Out-Null }
 
            $Chart1.Series | foreach {$_.CustomProperties = "DrawSideBySide=True"}
+           Try{
+               $Chart1.Series["Total"].Points | ForEach-Object {
+                    # $PSItem.Color = "#$($Colors[((($datasource | sort DaySum -Unique).DaySum | % {[math]::Round($_*1000, 3)} | sort -Unique)).IndexOf([math]::Round(($PSItem.YValues[0]), 3))])"
+                    $PSItem.Color = "#$($Colors[[Int](100 * ($PSItem.YValues[0]) / (($datasource | group date | % {($_.group.DailyEarnings | measure -sum).sum} | measure -maximum).maximum * 1000))])"
+                }
+            } Catch {}
     }
     "Front7DaysEarningsWithPoolSplit" {
            $datasource = If (Test-Path ".\logs\DailyEarnings.csv" ) {Import-Csv ".\logs\DailyEarnings.csv" | ? {[DateTime]$_.date -ge (Get-Date).AddDays(-7)}}
@@ -186,8 +197,8 @@ Switch ($Chart) {
            $chart1.Series[$Pool].color = "#$($Color)"
            # $chart1.Series[$Pool].color = [System.Drawing.Color]::FromArgb($A,247,147,26)
            # $chart1.Series[$Pool].label = "#VALY"
-           $chart1.Series[$Pool].ToolTip = "#SERIESNAME: #VALY mBTC" # - Total: #TOTAL mBTC";
-           $datasource | ? {$_.Pool -eq $Pool} | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f ([Decimal]$_.DailyEarnings*1000))) | Out-Null }
+           $chart1.Series[$Pool].ToolTip = "#SERIESNAME: #VALY" # - Total: #TOTAL mBTC";
+           $datasource | ? {$_.Pool -eq $Pool} | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f (([Decimal](Get-DisplayCurrency $_.DailyEarnings).Value)))) | Out-Null }
         }
 
            [void]$chart1.Series.Add("Total")
@@ -200,13 +211,14 @@ Switch ($Chart) {
            $chart1.Series["Total"].color = "#FFFFFF"
            # $chart1.Series[$Pool].color = [System.Drawing.Color]::FromArgb($A,247,147,26)
            # $chart1.Series[$Pool].label = "#VALY"
-           $chart1.Series["Total"].ToolTip = "#SERIESNAME: #VALY mBTC" # - Total: #TOTAL mBTC";
-           $datasource | select Date,DaySum -Unique | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f ([Decimal]$_.DaySUm*1000))) | Out-Null }
+           $chart1.Series["Total"].ToolTip = "#SERIESNAME: #VALY" # - Total: #TOTAL mBTC";
+           $datasource | select Date,DaySum -Unique | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f (([Decimal](Get-DisplayCurrency $_.DailyEarnings).Value)))) | Out-Null }
 
             $Chart1.Series | foreach {$_.CustomProperties = "DrawSideBySide=True"}
     }
     "DayPoolSplit" {
-           $datasource = If (Test-Path ".\logs\DailyEarnings.csv" ) {Import-Csv ".\logs\DailyEarnings.csv" | ? {$_.date -ge (Get-Date).date.AddDays(-1).ToString("MM/dd/yyyy")}}
+           $datasource = If (Test-Path ".\logs\DailyEarnings.csv" ) {Import-Csv ".\logs\DailyEarnings.csv" | ? {[datetime]$_.date -ge [datetime](Get-Date).date.AddDays(-1).ToString("MM/dd/yyyy")}}
+           # $datasource = If (Test-Path ".\logs\DailyEarnings.csv" ) {Import-Csv ".\logs\DailyEarnings.csv" }
            $dataSource | % {$_.DailyEarnings = [Decimal]$_.DailyEarnings}
            $datasource = $dataSource | ? {$_.DailyEarnings -gt 0} | sort DailyEarnings #-Descending
          
@@ -263,13 +275,13 @@ Switch ($Chart) {
            # $chart1.Series[$Pool].color = "#FFFFFF"
            # $chart1.Series[$Pool].color = [System.Drawing.Color]::FromArgb($A,247,147,26)
            # $chart1.Series[$Pool].label = "#SERIESNAME: #VALY mBTC"
-           $chart1.Series[$Pool].ToolTip = "#VALX - #SERIESNAME: #VALY mBTC" # - Total: #TOTAL mBTC";
-           $datasource | ? {$_.Pool -eq $Pool} | Sort date | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f ([Decimal]$_.DailyEarnings*1000))) | Out-Null }
+           $chart1.Series[$Pool].ToolTip = "#VALX - #SERIESNAME: #VALY" # - Total: #TOTAL mBTC";
+           $datasource | ? {$_.Pool -eq $Pool} | Sort date | ForEach-Object {$chart1.Series[$Pool].Points.addxy( $_.Date , ("{0:N3}" -f (([Decimal](Get-DisplayCurrency $_.DailyEarnings).Value)))) | Out-Null }
            # $Chart1.Series["Data"].Points.DataBindXY($datasource.pool, $datasource.DailyEarnings)
         }
     }
 }
 
 # save chart
-   # $chart1.SaveImage("$scriptpath\ChartTest.png","png") | Out-Null
+   $chart1.SaveImage(".\Logs\$($chart).png","png") | Out-Null
    $chart1
